@@ -68,15 +68,16 @@ pipeline {
 
               if [ $IS_FRESH -eq 0 ]; then
                 set +e
-                timeout 25m bash -c '
+                timeout 25m sh -c '
                   mvn -B org.owasp:dependency-check-maven:update-only \
-                     -DnvdApiKey='${NVD_API_KEY}' \
-                     -DdataDirectory="${DC_UPDATE_DIR}"
+                     -DnvdApiKey='"${NVD_API_KEY}"' \
+                     -DdataDirectory="'"${DC_UPDATE_DIR}"'"
                 '
                 RC=$?
                 set -e
                 if [ $RC -eq 0 ] && { [ -e "${DC_UPDATE_DIR}/odc.mv.db" ] || [ -e "${DC_UPDATE_DIR}/cve.db" ]; }; then
-                  rsync -a --delete "${DC_UPDATE_DIR}/" "${DC_CACHE_DIR}/"
+                  rm -rf "${DC_CACHE_DIR:?}/"* || true
+                  cp -R "${DC_UPDATE_DIR}/." "${DC_CACHE_DIR}/"
                 fi
               fi
 
@@ -85,7 +86,9 @@ pipeline {
                 exit 0
               fi
 
-              rsync -a --delete --exclude 'odc.update.lock' "${DC_CACHE_DIR}/" "${DC_LOCAL_DIR}/"
+              rm -rf "${DC_LOCAL_DIR:?}/"* || true
+              cp -R "${DC_CACHE_DIR}/." "${DC_LOCAL_DIR}/" || true
+              rm -f "${DC_LOCAL_DIR}/odc.update.lock" || true
 
               mvn -B org.owasp:dependency-check-maven:check \
                  -DnvdApiKey='${NVD_API_KEY}' \
