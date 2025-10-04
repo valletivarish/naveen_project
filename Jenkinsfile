@@ -103,13 +103,14 @@ pipeline {
       }
       post {
         always {
-          archiveArtifacts artifacts: 'target/dependency-check-report.html', fingerprint: true
+          archiveArtifacts artifacts: 'target/dependency-check-report.html', fingerprint: true, allowEmptyArchive: true
           publishHTML target: [
             reportDir: 'target',
             reportFiles: 'dependency-check-report.html',
             reportName: 'OWASP Dependency-Check Report',
             keepAll: true,
-            alwaysLinkToLastBuild: true
+            alwaysLinkToLastBuild: true,
+            allowMissing: true
           ]
         }
       }
@@ -120,7 +121,7 @@ pipeline {
         script {
           def imgTag = "petclinic-app:${env.BUILD_NUMBER}"
           sh '''
-            set +e
+            set -e
             if command -v docker >/dev/null 2>&1; then
               echo ">>> Docker detected. Building image and scanning with Trivy image scanner."
               docker build -t '"${imgTag}"' .
@@ -136,23 +137,21 @@ pipeline {
                 aquasec/trivy:latest image --scanners vuln \
                 --format table --output trivy-summary.txt '"${imgTag}"' || true
             else
-              echo ">>> Docker not found. Falling back to Trivy filesystem scan."
-              docker --version 2>/dev/null || true
-              docker ps 2>/dev/null || true
+              echo ">>> Docker not found. Downloading Trivy CLI and running filesystem scan."
+              TRIVY_VER="0.55.0"
+              rm -f trivy trivy.tgz || true
+              curl -sSL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
+              tar -xzf trivy.tgz trivy
+              chmod +x trivy
 
-              docker run --rm -v "$PWD:/work" -w /work \
-                aquasec/trivy:latest fs --scanners vuln \
-                --format json --output trivy-report.json /work || true
-
-              docker run --rm -v "$PWD:/work" -w /work \
-                aquasec/trivy:latest fs --scanners vuln \
-                --format table --output trivy-summary.txt /work || true
+              ./trivy fs --scanners vuln --format json --output trivy-report.json . || true
+              ./trivy fs --scanners vuln --format table --output trivy-summary.txt . || true
             fi
 
             if [ -f trivy-summary.txt ]; then
               {
                 echo "<html><body><h3>Trivy Summary</h3><pre>";
-                cat trivy-summary.txt;
+                sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' trivy-summary.txt;
                 echo "</pre></body></html>";
               } > trivy-summary.html || true
             fi
@@ -161,13 +160,14 @@ pipeline {
       }
       post {
         always {
-          archiveArtifacts artifacts: 'trivy-report.json, trivy-summary.html, trivy-summary.txt', fingerprint: true
+          archiveArtifacts artifacts: 'trivy-report.json, trivy-summary.html, trivy-summary.txt', fingerprint: true, allowEmptyArchive: true
           publishHTML target: [
             reportDir: '.',
             reportFiles: 'trivy-summary.html',
             reportName: 'Trivy Summary',
             keepAll: true,
-            alwaysLinkToLastBuild: true
+            alwaysLinkToLastBuild: true,
+            allowMissing: true
           ]
         }
       }
