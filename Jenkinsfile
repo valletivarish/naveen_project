@@ -33,18 +33,26 @@ pipeline {
     stage('SonarQube Analysis') {
       steps {
         withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-          script {
-            def hostIp = sh(script: "ip route get 1 2>/dev/null | awk '{print \$7; exit}' || hostname -I 2>/dev/null | awk '{print \$1}' || echo 127.0.0.1", returnStdout: true).trim()
-            sh """
-              mvn -B sonar:sonar \
-                -DskipTests \
-                -Dcheckstyle.skip=true \
-                -Dsonar.projectKey=petclinic \
-                -Dsonar.projectName="petclinic" \
-                -Dsonar.host.url=http://${hostIp}:9000 \
-                -Dsonar.token=${SONAR_TOKEN}
-            """
-          }
+          sh '''
+            set -e
+            if [ -n "$SONAR_HOST_URL" ]; then
+              SURL="$SONAR_HOST_URL"
+            else
+              HOST_IP="$(ip -4 addr show scope global 2>/dev/null | awk "/inet /{print \\$2}" | cut -d/ -f1 | head -n1 || true)"
+              [ -z "$HOST_IP" ] && HOST_IP="$(hostname -I 2>/dev/null | awk "{print \\$1}" || true)"
+              [ -z "$HOST_IP" ] && HOST_IP="$(getent hosts "$(hostname)" 2>/dev/null | awk "{print \\$1}" | head -n1 || true)"
+              [ -z "$HOST_IP" ] && HOST_IP="127.0.0.1"
+              SURL="http://$HOST_IP:9000"
+            fi
+            echo "Using SonarQube server: $SURL"
+            mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:4.0.0.4121:sonar \
+              -DskipTests \
+              -Dcheckstyle.skip=true \
+              -Dsonar.projectKey=petclinic \
+              -Dsonar.projectName="petclinic" \
+              -Dsonar.host.url="$SURL" \
+              -Dsonar.token="$SONAR_TOKEN"
+          '''
         }
       }
     }
