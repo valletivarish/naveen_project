@@ -1,6 +1,10 @@
 pipeline {
   agent any
 
+  parameters {
+    string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Git branch to build (e.g. main or test/scanner-check)')
+  }
+
   tools {
     maven 'Maven3'
     jdk 'JDK17'
@@ -17,15 +21,19 @@ pipeline {
     TRIVY_VER        = '0.55.0'
     TRIVY_CACHE_DIR  = '/var/jenkins_home/trivy-cache'
     TRIVY_FRESH_HOURS= '12'
-    TRIVY_SEVERITY   = 'LOW,MEDIUM,HIGH,CRITICAL'   // show everything in the report
-    TRIVY_STRICT_SEV = 'HIGH,CRITICAL'              // emphasized in summary
-    TRIVY_IGNORE_UNFIXED = 'false'                  // set 'true' if you want to hide unfixed
+    TRIVY_SEVERITY   = 'LOW,MEDIUM,HIGH,CRITICAL'
+    TRIVY_STRICT_SEV = 'HIGH,CRITICAL'
+    TRIVY_IGNORE_UNFIXED = 'false'
   }
 
   stages {
     stage('Checkout') {
       steps {
-        git branch: 'main', credentialsId: 'github-pat', url: 'https://github.com/valletivarish/naveen_project.git'
+        script {
+          def branch = params.GIT_BRANCH ?: 'main'
+          echo "Checking out branch: ${branch}"
+          git branch: branch, credentialsId: 'github-pat', url: 'https://github.com/valletivarish/naveen_project.git'
+        }
       }
     }
 
@@ -157,12 +165,10 @@ pipeline {
                 --timeout 10m --format table --output trivy-summary.txt "$TARGET_FILE" || true
             fi
 
-            # Always produce SARIF for code hosting integrations (optional but useful)
             if [ -s trivy-report.json ]; then
               "$TRIVY_BIN" convert --format sarif --output trivy-report.sarif trivy-report.json || true
             fi
 
-            # Build a rich HTML summary (never blank)
             HIGH=0; CRIT=0; TOTAL=0
             if [ -s trivy-report.json ]; then
               HIGH=$($JQ -r '.. | .Severity? // empty' trivy-report.json | grep -c '^HIGH$' || true)
@@ -179,7 +185,6 @@ pipeline {
               } > trivy-summary.txt
             fi
 
-            # Top findings block (up to 20 rows) added into HTML
             {
               echo "<html><head><meta charset='utf-8'><style>body{font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial} table{border-collapse:collapse;width:100%} th,td{border:1px solid #ddd;padding:6px} th{background:#f3f4f6;text-align:left}</style></head><body>"
               echo "<h2>Trivy Summary</h2>"
