@@ -9,7 +9,10 @@ pipeline {
   environment {
     SONAR_TOKEN_ID = 'SONAR_TOKEN'
     NVD_API_ID     = 'NVD_API_key'
-    DC_LOCAL_DIR   = '.dc-data'
+    DC_CACHE_DIR   = '/var/jenkins_home/dc-data'
+    DC_LOCAL_DIR   = '.dc-data-ro'
+    DC_UPDATE_DIR  = '.dc-data-update'
+    DC_FRESH_HOURS = '24'
   }
 
   stages {
@@ -49,18 +52,55 @@ pipeline {
           withEnv(['MAVEN_OPTS=-Xms512m -Xmx3g -XX:+UseG1GC -Djava.awt.headless=true']) {
             sh '''
               set -e
-              mkdir -p "${DC_LOCAL_DIR}"
+              mkdir -p "${DC_CACHE_DIR}"
+              rm -rf "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
+              mkdir -p "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
+
+              FRESH_SECS=$(( ${DC_FRESH_HOURS:-24} * 3600 ))
+              DB_PATH=""
+              if [ -e "${DC_CACHE_DIR}/odc.mv.db" ]; then DB_PATH="${DC_CACHE_DIR}/odc.mv.db"; elif [ -e "${DC_CACHE_DIR}/cve.db" ]; then DB_PATH="${DC_CACHE_DIR}/cve.db"; fi
+
+              IS_FRESH=0
+              if [ -n "$DB_PATH" ]; then
+                AGE=$(( $(date +%s) - $(stat -c %Y "$DB_PATH") ))
+                [ $AGE -lt $FRESH_SECS ] && IS_FRESH=1
+              fi
+
+              if [ $IS_FRESH -eq 0 ]; then
+                set +e
+                timeout 25m sh -c '
+                  mvn -B org.owasp:dependency-check-maven:update-only \
+                     -DnvdApiKey='"${NVD_API_KEY}"' \
+                     -DdataDirectory="'"${DC_UPDATE_DIR}"'"
+                '
+                RC=$?
+                set -e
+                if [ $RC -eq 0 ] && { [ -e "${DC_UPDATE_DIR}/odc.mv.db" ] || [ -e "${DC_UPDATE_DIR}/cve.db" ]; }; then
+                  rm -rf "${DC_CACHE_DIR:?}/"* || true
+                  cp -R "${DC_UPDATE_DIR}/." "${DC_CACHE_DIR}/"
+                fi
+              fi
+
+              if [ ! -e "${DC_CACHE_DIR}/odc.mv.db" ] && [ ! -e "${DC_CACHE_DIR}/cve.db" ]; then
+                echo "No NVD database available; skipping Dependency-Check."
+                exit 0
+              fi
+
+              rm -rf "${DC_LOCAL_DIR:?}/"* || true
+              cp -R "${DC_CACHE_DIR}/." "${DC_LOCAL_DIR}/" || true
+              rm -f "${DC_LOCAL_DIR}/odc.update.lock" || true
 
               mvn -B org.owasp:dependency-check-maven:check \
-                 -DnvdApiKey=${NVD_API_KEY} \
+                 -DnvdApiKey='${NVD_API_KEY}' \
                  -DdataDirectory="${DC_LOCAL_DIR}" \
                  -DautoUpdate=false \
-                 -DnvdValidForHours=24 \
+                 -DnvdValidForHours=${DC_FRESH_HOURS} \
                  -DfailOnCVSS=11 \
                  -DskipTests
 
               find . -type f -name "dependency-check-report.*" -delete || true
               find . -path "*/target" -type f -name "dependency-check*" -delete || true
+              rm -rf "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
             '''
           }
         }
