@@ -101,19 +101,66 @@ pipeline {
           }
         }
       }
+
+      post {
+        always {
+          archiveArtifacts artifacts: 'target/dependency-check-report.html', fingerprint: true
+          publishHTML target: [
+            reportDir: 'target',
+            reportFiles: 'dependency-check-report.html',
+            reportName: 'OWASP Dependency-Check Report',
+            keepAll: true,
+            alwaysLinkToLastBuild: true
+          ]
+        }
+      }
+    }
+
+    stage('Container Build & Scan (Trivy)') {
+      steps {
+        script {
+          def imgTag = "petclinic-app:${env.BUILD_NUMBER}"
+
+          sh """
+            echo '>>> Building Docker image: ${imgTag}'
+            docker build -t ${imgTag} .
+            docker images ${imgTag} || true
+          """
+
+          sh """
+            echo '>>> Running Trivy (this may fetch vuln DB on first run)'
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy:latest image --scanners vuln --format json --output trivy-report.json ${imgTag} || true
+          """
+
+          sh '''
+            if [ -f trivy-report.json ]; then
+              jq '{Results: .}' trivy-report.json > trivy-summary.json || true
+              echo "<html><body><h3>Trivy report (summary)</h3><pre>" > trivy-summary.html || true
+              jq . trivy-report.json >> trivy-summary.html || true
+              echo "</pre></body></html>" >> trivy-summary.html || true
+            fi
+          '''
+        }
+      }
+
+      post {
+        always {
+          archiveArtifacts artifacts: 'trivy-report.json, trivy-summary.html', fingerprint: true
+          publishHTML target: [
+            reportDir: '.',
+            reportFiles: 'trivy-summary.html',
+            reportName: 'Trivy Summary',
+            keepAll: true,
+            alwaysLinkToLastBuild: true
+          ]
+        }
+      }
     }
   }
 
   post {
     always {
-      archiveArtifacts artifacts: 'target/dependency-check-report.html', fingerprint: true
-      publishHTML target: [
-        reportDir: 'target',
-        reportFiles: 'dependency-check-report.html',
-        reportName: 'Dependency-Check Report',
-        keepAll: true,
-        alwaysLinkToLastBuild: true
-      ]
       echo "Pipeline finished with status: ${currentBuild.currentResult}"
     }
   }
