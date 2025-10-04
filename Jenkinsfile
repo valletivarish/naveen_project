@@ -47,60 +47,66 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: env.NVD_API_ID, variable: 'NVD_API_KEY')]) {
           script {
-            // prepare workspace & debug before running
             sh """
               set -x
               echo ">>> WORKSPACE: ${WORKSPACE}"
               mkdir -p "${WORKSPACE}/${DC_REPORT_DIR}"
-              ls -la "${WORKSPACE}" || true
-              ls -la "${WORKSPACE}/${DC_REPORT_DIR}" || true
+              chmod -R 777 "${WORKSPACE}/${DC_REPORT_DIR}"
               echo ">>> Starting OWASP dependency-check (this may download NVD DB and take time)"
             """
 
-            // run dependency-check docker container (no '|| true' so failures surface)
+            // Run dependency-check inside Docker as Jenkins user
             sh """
               docker run --rm \
+                -u \$(id -u):\$(id -g) \
                 -v "${WORKSPACE}:/src" \
                 -v "${WORKSPACE}/${DC_REPORT_DIR}:/report" \
                 owasp/dependency-check:latest \
                 --project "spring-petclinic" \
                 --scan /src \
-                --format ALL \
+                --format HTML \
                 --out /report \
                 --nvdApiKey ${NVD_API_KEY}
             """
 
-            // list results
+            // Debug output after scan
             sh """
               echo '>>> After docker run: listing report dir:'
-              ls -la "${WORKSPACE}/${DC_REPORT_DIR}" || true
-              echo '>>> HTML files (if any):'
-              ls -la "${WORKSPACE}/${DC_REPORT_DIR}"/*.html || true
+              ls -Rla "${WORKSPACE}/${DC_REPORT_DIR}" || true
             """
 
-            // validate reports exist; fail with a clear message if missing
-            def out = sh(script: "test -d \"${WORKSPACE}/${DC_REPORT_DIR}\" -a -n \"\$(ls -A ${WORKSPACE}/${DC_REPORT_DIR} 2>/dev/null)\" && echo OK || echo MISSING", returnStdout: true).trim()
-            if (out != 'OK') {
-              error "Dependency-Check did not produce any reports in ${WORKSPACE}/${DC_REPORT_DIR} — check console output above for docker errors or NVD DB download issues."
+            // Verify report file exists
+            def reportFile = "${WORKSPACE}/${DC_REPORT_DIR}/dependency-check-report.html"
+            if (!fileExists(reportFile)) {
+              error "❌ Dependency-Check HTML report not found at ${reportFile}. Check docker logs for errors or permissions issues."
+            } else {
+              echo "✅ Dependency-Check HTML report generated successfully at ${reportFile}"
             }
-          } // script
-        } // withCredentials
-      } // steps
+          }
+        }
+      }
 
       post {
         always {
+          // Debug before publishing
+          sh 'echo ">>> Preparing to archive and publish Dependency-Check report..."'
+          sh 'ls -Rla "${WORKSPACE}/${DC_REPORT_DIR}" || true'
+
           archiveArtifacts artifacts: "${DC_REPORT_DIR}/**/*", fingerprint: true
+
           publishHTML target: [
             reportDir: "${DC_REPORT_DIR}",
             reportFiles: 'dependency-check-report.html',
             reportName: 'Dependency-Check Report',
-            keepAll: true
+            allowMissing: false,
+            keepAll: true,
+            alwaysLinkToLastBuild: true
           ]
         }
       }
     }
 
-    // later we will add Checkov & Trivy stages
+    // Future stages (like Checkov & Trivy) can be added below
   }
 
   post {
