@@ -33,15 +33,18 @@ pipeline {
     stage('SonarQube Analysis') {
       steps {
         withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-          sh """
-            mvn -B sonar:sonar \
-              -DskipTests \
-              -Dcheckstyle.skip=true \
-              -Dsonar.projectKey=petclinic \
-              -Dsonar.projectName="petclinic" \
-              -Dsonar.host.url=http://192.168.0.181:9000 \
-              -Dsonar.token=${SONAR_TOKEN}
-          """
+          script {
+            def hostIp = sh(script: "ip route get 1 2>/dev/null | awk '{print \$7; exit}' || hostname -I 2>/dev/null | awk '{print \$1}' || echo 127.0.0.1", returnStdout: true).trim()
+            sh """
+              mvn -B sonar:sonar \
+                -DskipTests \
+                -Dcheckstyle.skip=true \
+                -Dsonar.projectKey=petclinic \
+                -Dsonar.projectName="petclinic" \
+                -Dsonar.host.url=http://${hostIp}:9000 \
+                -Dsonar.token=${SONAR_TOKEN}
+            """
+          }
         }
       }
     }
