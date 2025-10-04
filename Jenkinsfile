@@ -49,36 +49,22 @@ pipeline {
           script {
             sh """
               set -x
-              echo ">>> WORKSPACE: ${WORKSPACE}"
+              echo ">>> Running OWASP Dependency-Check via Maven plugin..."
               mkdir -p "${WORKSPACE}/${DC_REPORT_DIR}"
-              chmod -R 777 "${WORKSPACE}/${DC_REPORT_DIR}"
-              echo ">>> Starting OWASP dependency-check (this may download NVD DB and take time)"
-            """
 
-            // Run dependency-check inside Docker as Jenkins user
-            sh """
-              docker run --rm \
-                -u \$(id -u):\$(id -g) \
-                -v "${WORKSPACE}:/src" \
-                -v "${WORKSPACE}/${DC_REPORT_DIR}:/report" \
-                owasp/dependency-check:latest \
-                --project "spring-petclinic" \
-                --scan /src \
-                --format HTML \
-                --out /report \
-                --nvdApiKey ${NVD_API_KEY}
-            """
+              mvn org.owasp:dependency-check-maven:check \
+                -DnvdApiKey=${NVD_API_KEY} \
+                -Dformat=HTML \
+                -DoutputDirectory=${WORKSPACE}/${DC_REPORT_DIR} \
+                -DskipTests
 
-            // Debug output after scan
-            sh """
-              echo '>>> After docker run: listing report dir:'
+              echo ">>> Listing generated Dependency-Check reports:"
               ls -Rla "${WORKSPACE}/${DC_REPORT_DIR}" || true
             """
 
-            // Verify report file exists
             def reportFile = "${WORKSPACE}/${DC_REPORT_DIR}/dependency-check-report.html"
             if (!fileExists(reportFile)) {
-              error "❌ Dependency-Check HTML report not found at ${reportFile}. Check docker logs for errors or permissions issues."
+              error "❌ Dependency-Check HTML report not found at ${reportFile}. Check Maven logs for scan errors."
             } else {
               echo "✅ Dependency-Check HTML report generated successfully at ${reportFile}"
             }
@@ -88,12 +74,10 @@ pipeline {
 
       post {
         always {
-          // Debug before publishing
-          sh 'echo ">>> Preparing to archive and publish Dependency-Check report..."'
+          echo ">>> Archiving and publishing Dependency-Check report..."
           sh 'ls -Rla "${WORKSPACE}/${DC_REPORT_DIR}" || true'
 
           archiveArtifacts artifacts: "${DC_REPORT_DIR}/**/*", fingerprint: true
-
           publishHTML target: [
             reportDir: "${DC_REPORT_DIR}",
             reportFiles: 'dependency-check-report.html',
@@ -106,7 +90,7 @@ pipeline {
       }
     }
 
-    // Future stages (like Checkov & Trivy) can be added below
+    // Future stages (e.g., Checkov, Trivy) can be added below
   }
 
   post {
