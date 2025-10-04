@@ -35,16 +35,50 @@ pipeline {
         withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
           sh '''
             set -e
+
+            probe() {
+              url="$1"
+              [ -z "$url" ] && return 1
+              curl -sSf --max-time 3 "$url/api/system/status" >/dev/null 2>&1
+            }
+
+            GATEWAY_IP="$(ip route | awk \'/default/ {print $3; exit}\')" || true
+            FIRST_IPV4="$(ip -4 addr show scope global 2>/dev/null | awk "/inet /{print \\$2}" | cut -d/ -f1 | head -n1)" || true
+            HOST_IP_ALT="$(hostname -I 2>/dev/null | awk "{print \\$1}")" || true
+
+            CANDIDATES=""
             if [ -n "$SONAR_HOST_URL" ]; then
-              SURL="$SONAR_HOST_URL"
-            else
-              HOST_IP="$(ip -4 addr show scope global 2>/dev/null | awk "/inet /{print \\$2}" | cut -d/ -f1 | head -n1 || true)"
-              [ -z "$HOST_IP" ] && HOST_IP="$(hostname -I 2>/dev/null | awk "{print \\$1}" || true)"
-              [ -z "$HOST_IP" ] && HOST_IP="$(getent hosts "$(hostname)" 2>/dev/null | awk "{print \\$1}" | head -n1 || true)"
-              [ -z "$HOST_IP" ] && HOST_IP="127.0.0.1"
-              SURL="http://$HOST_IP:9000"
+              CANDIDATES="$SONAR_HOST_URL"
             fi
+
+            for c in \
+              "http://localhost:9000" \
+              "http://127.0.0.1:9000" \
+              "http://${GATEWAY_IP}:9000" \
+              "http://host.docker.internal:9000" \
+              "http://${FIRST_IPV4}:9000" \
+              "http://${HOST_IP_ALT}:9000"
+            do
+              if [ -n "$c" ]; then
+                CANDIDATES="$CANDIDATES $c"
+              fi
+            done
+
+            SURL=""
+            for u in $CANDIDATES; do
+              if probe "$u"; then
+                SURL="$u"
+                break
+              fi
+            done
+
+            if [ -z "$SURL" ]; then
+              echo "WARN: No reachable SonarQube endpoint found (tried: $CANDIDATES). Skipping Sonar analysis."
+              exit 0
+            fi
+
             echo "Using SonarQube server: $SURL"
+
             mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:4.0.0.4121:sonar \
               -DskipTests \
               -Dcheckstyle.skip=true \
