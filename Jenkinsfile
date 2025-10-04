@@ -97,10 +97,6 @@ pipeline {
                  -DnvdValidForHours=${DC_FRESH_HOURS} \
                  -DfailOnCVSS=11 \
                  -DskipTests
-
-              find . -type f -name "dependency-check-report.*" -delete || true
-              find . -path "*/target" -type f -name "dependency-check*" -delete || true
-              rm -rf "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
             '''
           }
         }
@@ -110,6 +106,14 @@ pipeline {
 
   post {
     always {
+      archiveArtifacts artifacts: 'target/dependency-check-report.html', fingerprint: true
+      publishHTML target: [
+        reportDir: 'target',
+        reportFiles: 'dependency-check-report.html',
+        reportName: 'Dependency-Check Report',
+        keepAll: true,
+        alwaysLinkToLastBuild: true
+      ]
       echo "Pipeline finished with status: ${currentBuild.currentResult}"
     }
   }
