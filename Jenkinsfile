@@ -11,6 +11,8 @@ pipeline {
     NVD_API_ID     = 'NVD_API_key'
     DC_CACHE_DIR   = '/var/jenkins_home/dc-data'
     DC_LOCAL_DIR   = '.dc-data-ro'
+    DC_UPDATE_DIR  = '.dc-data-update'
+    DC_FRESH_HOURS = '24'
   }
 
   stages {
@@ -44,23 +46,42 @@ pipeline {
       }
     }
 
-    stage('SCA - OWASP Dependency-Check (no update/lock-free)') {
+    stage('SCA - OWASP Dependency-Check') {
       steps {
         withCredentials([string(credentialsId: env.NVD_API_ID, variable: 'NVD_API_KEY')]) {
           withEnv(['MAVEN_OPTS=-Xms512m -Xmx3g -XX:+UseG1GC -Djava.awt.headless=true']) {
             sh '''
               set -e
               mkdir -p "${DC_CACHE_DIR}"
-              rm -rf "${DC_LOCAL_DIR}"
-              mkdir -p "${DC_LOCAL_DIR}"
+              rm -rf "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
+              mkdir -p "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
 
-              CACHE_OK=0
-              if [ -e "${DC_CACHE_DIR}/cve.db" ] || [ -e "${DC_CACHE_DIR}/odc.mv.db" ]; then
-                CACHE_OK=1
+              FRESH_SECS=$(( ${DC_FRESH_HOURS:-24} * 3600 ))
+              DB_PATH=""
+              if [ -e "${DC_CACHE_DIR}/odc.mv.db" ]; then DB_PATH="${DC_CACHE_DIR}/odc.mv.db"; elif [ -e "${DC_CACHE_DIR}/cve.db" ]; then DB_PATH="${DC_CACHE_DIR}/cve.db"; fi
+
+              IS_FRESH=0
+              if [ -n "$DB_PATH" ]; then
+                AGE=$(( $(date +%s) - $(stat -c %Y "$DB_PATH") ))
+                [ $AGE -lt $FRESH_SECS ] && IS_FRESH=1
               fi
 
-              if [ "$CACHE_OK" -eq 0 ]; then
-                echo "Dependency-Check cache is empty; skipping scan."
+              if [ $IS_FRESH -eq 0 ]; then
+                set +e
+                timeout 25m bash -c '
+                  mvn -B org.owasp:dependency-check-maven:update-only \
+                     -DnvdApiKey='${NVD_API_KEY}' \
+                     -DdataDirectory="${DC_UPDATE_DIR}"
+                '
+                RC=$?
+                set -e
+                if [ $RC -eq 0 ] && { [ -e "${DC_UPDATE_DIR}/odc.mv.db" ] || [ -e "${DC_UPDATE_DIR}/cve.db" ]; }; then
+                  rsync -a --delete "${DC_UPDATE_DIR}/" "${DC_CACHE_DIR}/"
+                fi
+              fi
+
+              if [ ! -e "${DC_CACHE_DIR}/odc.mv.db" ] && [ ! -e "${DC_CACHE_DIR}/cve.db" ]; then
+                echo "No NVD database available; skipping Dependency-Check."
                 exit 0
               fi
 
@@ -70,13 +91,13 @@ pipeline {
                  -DnvdApiKey='${NVD_API_KEY}' \
                  -DdataDirectory="${DC_LOCAL_DIR}" \
                  -DautoUpdate=false \
-                 -DnvdValidForHours=24 \
+                 -DnvdValidForHours=${DC_FRESH_HOURS} \
                  -DfailOnCVSS=11 \
                  -DskipTests
 
               find . -type f -name "dependency-check-report.*" -delete || true
               find . -path "*/target" -type f -name "dependency-check*" -delete || true
-              rm -rf "${DC_LOCAL_DIR}"
+              rm -rf "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
             '''
           }
         }
