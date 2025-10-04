@@ -7,12 +7,17 @@ pipeline {
   }
 
   environment {
-    SONAR_TOKEN_ID = 'SONAR_TOKEN'
-    NVD_API_ID     = 'NVD_API_key'
-    DC_CACHE_DIR   = '/var/jenkins_home/dc-data'
-    DC_LOCAL_DIR   = '.dc-data-ro'
-    DC_UPDATE_DIR  = '.dc-data-update'
-    DC_FRESH_HOURS = '24'
+    SONAR_TOKEN_ID   = 'SONAR_TOKEN'
+    NVD_API_ID       = 'NVD_API_key'
+    DC_CACHE_DIR     = '/var/jenkins_home/dc-data'
+    DC_LOCAL_DIR     = '.dc-data-ro'
+    DC_UPDATE_DIR    = '.dc-data-update'
+    DC_FRESH_HOURS   = '24'
+
+    TRIVY_VER        = '0.55.0'
+    TRIVY_CACHE_DIR  = '/var/jenkins_home/trivy-cache'
+    TRIVY_FRESH_HOURS= '12'
+    TRIVY_SEVERITY   = 'HIGH,CRITICAL'
   }
 
   stages {
@@ -42,34 +47,19 @@ pipeline {
               curl -sSf --max-time 3 "$url/api/system/status" >/dev/null 2>&1
             }
 
-            GATEWAY_IP="$(ip route | awk \'/default/ {print $3; exit}\')" || true
+            GATEWAY_IP="$(ip route | awk '/default/ {print $3; exit}')" || true
             FIRST_IPV4="$(ip -4 addr show scope global 2>/dev/null | awk "/inet /{print \\$2}" | cut -d/ -f1 | head -n1)" || true
             HOST_IP_ALT="$(hostname -I 2>/dev/null | awk "{print \\$1}")" || true
 
             CANDIDATES=""
-            if [ -n "$SONAR_HOST_URL" ]; then
-              CANDIDATES="$SONAR_HOST_URL"
-            fi
-
-            for c in \
-              "http://localhost:9000" \
-              "http://127.0.0.1:9000" \
-              "http://${GATEWAY_IP}:9000" \
-              "http://host.docker.internal:9000" \
-              "http://${FIRST_IPV4}:9000" \
-              "http://${HOST_IP_ALT}:9000"
-            do
-              if [ -n "$c" ]; then
-                CANDIDATES="$CANDIDATES $c"
-              fi
+            if [ -n "$SONAR_HOST_URL" ]; then CANDIDATES="$SONAR_HOST_URL"; fi
+            for c in "http://localhost:9000" "http://127.0.0.1:9000" "http://${GATEWAY_IP}:9000" "http://host.docker.internal:9000" "http://${FIRST_IPV4}:9000" "http://${HOST_IP_ALT}:9000"; do
+              [ -n "$c" ] && CANDIDATES="$CANDIDATES $c"
             done
 
             SURL=""
             for u in $CANDIDATES; do
-              if probe "$u"; then
-                SURL="$u"
-                break
-              fi
+              if probe "$u"; then SURL="$u"; break; fi
             done
 
             if [ -z "$SURL" ]; then
@@ -167,30 +157,69 @@ pipeline {
           def imgTag = "petclinic-app:${env.BUILD_NUMBER}"
           sh '''
             set -e
+            mkdir -p "${TRIVY_CACHE_DIR}"
+
+            NOW=$(date +%s)
+            FRESH_SECS=$(( ${TRIVY_FRESH_HOURS:-12} * 3600 ))
+            META="${TRIVY_CACHE_DIR}/db/metadata.json"
+            SKIP=""
+
+            if [ -f "$META" ]; then
+              AGE=$(( NOW - $(stat -c %Y "$META") ))
+              if [ $AGE -lt $FRESH_SECS ]; then
+                SKIP="--skip-update"
+                echo "Trivy DB is fresh (< ${TRIVY_FRESH_HOURS:-12}h). Using --skip-update."
+              fi
+            fi
+
+            if [ -z "$SKIP" ]; then
+              set +e
+              timeout 3m bash -c "
+                curl -sSL -o trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz &&
+                tar -xzf trivy.tgz trivy &&
+                chmod +x trivy &&
+                ./trivy --cache-dir '${TRIVY_CACHE_DIR}' --download-db-only
+              "
+              [ $? -ne 0 ] && echo 'Trivy DB prefetch timed out/failed; will continue with existing cache.'
+              set -e
+              SKIP="--skip-update"
+            fi
+
             if command -v docker >/dev/null 2>&1; then
-              echo ">>> Docker detected. Building image and scanning with Trivy image scanner."
+              echo ">>> Docker detected. Building image and scanning (offline)."
               docker build -t '"${imgTag}"' .
               docker images '"${imgTag}"' || true
 
-              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "$PWD:/work" -w /work \
-                aquasec/trivy:latest image --scanners vuln \
-                --format json --output trivy-report.json '"${imgTag}"' || true
-
-              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                -v "$PWD:/work" -w /work \
-                aquasec/trivy:latest image --scanners vuln \
-                --format table --output trivy-summary.txt '"${imgTag}"' || true
-            else
-              echo ">>> Docker not found. Downloading Trivy CLI and running filesystem scan."
-              TRIVY_VER="0.55.0"
-              rm -f trivy trivy.tgz || true
               curl -sSL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
               tar -xzf trivy.tgz trivy
               chmod +x trivy
 
-              ./trivy fs --scanners vuln --format json --output trivy-report.json . || true
-              ./trivy fs --scanners vuln --format table --output trivy-summary.txt . || true
+              ./trivy image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP} --offline-scan \
+                --scanners vuln --severity ${TRIVY_SEVERITY} --ignore-unfixed \
+                --timeout 5m --format json --output trivy-report.json '"${imgTag}"' || true
+
+              ./trivy image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP} --offline-scan \
+                --scanners vuln --severity ${TRIVY_SEVERITY} --ignore-unfixed \
+                --timeout 5m --format table --output trivy-summary.txt '"${imgTag}"' || true
+            else
+              echo ">>> Docker not found. Using Trivy CLI on build artifacts (fast)."
+              curl -sSL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
+              tar -xzf trivy.tgz trivy
+              chmod +x trivy
+
+              TARGET_FILE="$(ls target/*.jar 2>/dev/null | head -n1 || true)"
+              if [ -z "$TARGET_FILE" ]; then
+                TARGET_FILE="."
+              fi
+              echo "Trivy FS target: $TARGET_FILE"
+
+              ./trivy fs --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP} \
+                --scanners vuln --severity ${TRIVY_SEVERITY} --ignore-unfixed \
+                --timeout 5m --format json --output trivy-report.json "$TARGET_FILE" || true
+
+              ./trivy fs --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP} \
+                --scanners vuln --severity ${TRIVY_SEVERITY} --ignore-unfixed \
+                --timeout 5m --format table --output trivy-summary.txt "$TARGET_FILE" || true
             fi
 
             if [ -f trivy-summary.txt ]; then
