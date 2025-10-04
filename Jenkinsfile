@@ -159,67 +159,68 @@ pipeline {
             set -e
             mkdir -p "${TRIVY_CACHE_DIR}"
 
+            # Ensure Trivy binary is available
+            TRIVY_BIN="./trivy"
+            if ! [ -x "$TRIVY_BIN" ]; then
+              curl -sSL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
+              tar -xzf trivy.tgz trivy
+              chmod +x trivy
+            fi
+
+            # Determine target (fast path = built JAR if no Docker)
+            TARGET_FILE="$(ls target/*.jar 2>/dev/null | head -n1 || true)"
+            [ -z "$TARGET_FILE" ] && TARGET_FILE="."
+
             NOW=$(date +%s)
             FRESH_SECS=$(( ${TRIVY_FRESH_HOURS:-12} * 3600 ))
             META="${TRIVY_CACHE_DIR}/db/metadata.json"
-            SKIP=""
+            SKIP_ARGS=""
 
             if [ -f "$META" ]; then
               AGE=$(( NOW - $(stat -c %Y "$META") ))
               if [ $AGE -lt $FRESH_SECS ]; then
-                SKIP="--skip-update"
-                echo "Trivy DB is fresh (< ${TRIVY_FRESH_HOURS:-12}h). Using --skip-update."
+                SKIP_ARGS="--skip-db-update --offline-scan"
+                echo "Trivy DB is fresh (< ${TRIVY_FRESH_HOURS:-12}h). Using ${SKIP_ARGS}."
               fi
             fi
 
-            if [ -z "$SKIP" ]; then
+            if [ -z "$SKIP_ARGS" ]; then
               set +e
-              timeout 3m bash -c "
-                curl -sSL -o trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz &&
-                tar -xzf trivy.tgz trivy &&
-                chmod +x trivy &&
-                ./trivy --cache-dir '${TRIVY_CACHE_DIR}' --download-db-only
-              "
-              [ $? -ne 0 ] && echo 'Trivy DB prefetch timed out/failed; will continue with existing cache.'
+              timeout 3m "$TRIVY_BIN" db --download --cache-dir "${TRIVY_CACHE_DIR}"
+              PREF=$?
               set -e
-              SKIP="--skip-update"
+              if [ $PREF -ne 0 ]; then
+                echo "Trivy DB prefetch timed out/failed."
+              fi
+              if [ -f "$META" ]; then
+                SKIP_ARGS="--skip-db-update --offline-scan"
+              else
+                SKIP_ARGS=""
+                echo "No cache yet; first scan will download DB."
+              fi
             fi
 
             if command -v docker >/dev/null 2>&1; then
-              echo ">>> Docker detected. Building image and scanning (offline)."
+              echo ">>> Docker detected. Building image and scanning."
               docker build -t '"${imgTag}"' .
               docker images '"${imgTag}"' || true
 
-              curl -sSL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
-              tar -xzf trivy.tgz trivy
-              chmod +x trivy
-
-              ./trivy image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP} --offline-scan \
+              "$TRIVY_BIN" image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
                 --scanners vuln --severity ${TRIVY_SEVERITY} --ignore-unfixed \
-                --timeout 5m --format json --output trivy-report.json '"${imgTag}"' || true
+                --timeout 8m --format json --output trivy-report.json '"${imgTag}"' || true
 
-              ./trivy image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP} --offline-scan \
+              "$TRIVY_BIN" image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
                 --scanners vuln --severity ${TRIVY_SEVERITY} --ignore-unfixed \
-                --timeout 5m --format table --output trivy-summary.txt '"${imgTag}"' || true
+                --timeout 8m --format table --output trivy-summary.txt '"${imgTag}"' || true
             else
-              echo ">>> Docker not found. Using Trivy CLI on build artifacts (fast)."
-              curl -sSL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
-              tar -xzf trivy.tgz trivy
-              chmod +x trivy
-
-              TARGET_FILE="$(ls target/*.jar 2>/dev/null | head -n1 || true)"
-              if [ -z "$TARGET_FILE" ]; then
-                TARGET_FILE="."
-              fi
-              echo "Trivy FS target: $TARGET_FILE"
-
-              ./trivy fs --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP} \
+              echo ">>> Docker not found. Scanning build artifacts."
+              "$TRIVY_BIN" fs --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
                 --scanners vuln --severity ${TRIVY_SEVERITY} --ignore-unfixed \
-                --timeout 5m --format json --output trivy-report.json "$TARGET_FILE" || true
+                --timeout 8m --format json --output trivy-report.json "$TARGET_FILE" || true
 
-              ./trivy fs --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP} \
+              "$TRIVY_BIN" fs --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
                 --scanners vuln --severity ${TRIVY_SEVERITY} --ignore-unfixed \
-                --timeout 5m --format table --output trivy-summary.txt "$TARGET_FILE" || true
+                --timeout 8m --format table --output trivy-summary.txt "$TARGET_FILE" || true
             fi
 
             if [ -f trivy-summary.txt ]; then
