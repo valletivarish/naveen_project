@@ -8,7 +8,7 @@ pipeline {
 
   environment {
     SONAR_TOKEN_ID = 'SONAR_TOKEN'
-    NVD_API_ID     = 'NVD_API_key'
+    NVD_API_ID     = 'NVD_API_key'              // Jenkins credential ID for NVD API key (lowercase k)
     DC_DATA_DIR    = '/var/jenkins_home/dc-data'
   }
 
@@ -47,31 +47,51 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: env.NVD_API_ID, variable: 'NVD_API_KEY')]) {
           withEnv(['MAVEN_OPTS=-Xms512m -Xmx3g -XX:+UseG1GC -Djava.awt.headless=true']) {
-            script {
-              sh '''
+            sh '''
+              set -e
+              mkdir -p "${DC_DATA_DIR}"
+
+              BOOTSTRAP_NEEDED=0
+              if [ ! -e "${DC_DATA_DIR}/cve.db" ] && [ ! -e "${DC_DATA_DIR}/odc.mv.db" ]; then
+                BOOTSTRAP_NEEDED=1
+              fi
+
+              if [ "$BOOTSTRAP_NEEDED" -eq 1 ]; then
+                set +e
+                timeout 25m bash -c '
+                  mvn -B org.owasp:dependency-check-maven:update-only \
+                     -DnvdApiKey='"${NVD_API_KEY}"' \
+                     -DdataDirectory="'"${DC_DATA_DIR}"'"
+                '
+                RC=$?
                 set -e
-                mkdir -p "${DC_DATA_DIR}"
 
-                if [ ! -e "${DC_DATA_DIR}/cve.db" ] && [ ! -e "${DC_DATA_DIR}/odc.mv.db" ]; then
-                  timeout 20m bash -c '
-                    mvn -B org.owasp:dependency-check-maven:update-only \
-                       -DnvdApiKey='${NVD_API_KEY}' \
-                       -DdataDirectory="${DC_DATA_DIR}"
-                  ' || echo "Bootstrap update skipped"
+                if [ $RC -ne 0 ] && [ -f "${DC_DATA_DIR}/odc.update.lock" ]; then
+                  LOCK_AGE=$(( $(date +%s) - $(stat -c %Y "${DC_DATA_DIR}/odc.update.lock") ))
+                  if [ $LOCK_AGE -gt 600 ]; then
+                    rm -f "${DC_DATA_DIR}/odc.update.lock" || true
+                  fi
                 fi
+              fi
 
-                mvn -B org.owasp:dependency-check-maven:check \
-                   -DnvdApiKey=${NVD_API_KEY} \
-                   -DdataDirectory="${DC_DATA_DIR}" \
-                   -DautoUpdate=false \
-                   -DnvdValidForHours=24 \
-                   -DfailOnCVSS=11 \
-                   -DskipTests
+              if [ -f "${DC_DATA_DIR}/odc.update.lock" ]; then
+                LOCK_AGE=$(( $(date +%s) - $(stat -c %Y "${DC_DATA_DIR}/odc.update.lock") ))
+                if [ $LOCK_AGE -gt 600 ]; then
+                  rm -f "${DC_DATA_DIR}/odc.update.lock" || true
+                fi
+              fi
 
-                find . -type f -name "dependency-check-report.*" -delete || true
-                find . -path "*/target" -type f -name "dependency-check*" -delete || true
-              '''
-            }
+              mvn -B org.owasp:dependency-check-maven:check \
+                 -DnvdApiKey=${NVD_API_KEY} \
+                 -DdataDirectory="${DC_DATA_DIR}" \
+                 -DautoUpdate=false \
+                 -DnvdValidForHours=24 \
+                 -DfailOnCVSS=11 \
+                 -DskipTests
+
+              find . -type f -name "dependency-check-report.*" -delete || true
+              find . -path "*/target" -type f -name "dependency-check*" -delete || true
+            '''
           }
         }
       }
