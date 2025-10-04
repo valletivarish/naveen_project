@@ -7,9 +7,9 @@ pipeline {
   }
 
   environment {
-    SONAR_TOKEN_ID = 'SONAR_TOKEN'        // Jenkins credential ID for Sonar token
-    NVD_API_ID     = 'NVD_API_key'        // Jenkins credential ID for NVD API key (lowercase k)
-    DC_DATA_DIR    = '/var/jenkins_home/dc-data'  // shared, persistent cache dir (not in workspace)
+    SONAR_TOKEN_ID = 'SONAR_TOKEN'
+    NVD_API_ID     = 'NVD_API_key'
+    DC_DATA_DIR    = '/var/jenkins_home/dc-data'
   }
 
   stages {
@@ -43,16 +43,23 @@ pipeline {
       }
     }
 
-    stage('SCA - OWASP Dependency-Check (fast, no update, no reports)') {
+    stage('SCA - OWASP Dependency-Check') {
       steps {
-        retry(2) {
-          withCredentials([string(credentialsId: env.NVD_API_ID, variable: 'NVD_API_KEY')]) {
-            withEnv(['MAVEN_OPTS=-Xms512m -Xmx3g -XX:+UseG1GC -Djava.awt.headless=true']) {
-              sh """
+        withCredentials([string(credentialsId: env.NVD_API_ID, variable: 'NVD_API_KEY')]) {
+          withEnv(['MAVEN_OPTS=-Xms512m -Xmx3g -XX:+UseG1GC -Djava.awt.headless=true']) {
+            script {
+              sh '''
                 set -e
                 mkdir -p "${DC_DATA_DIR}"
 
-                # Run DC WITHOUT updating (avoids odc.update.lock waits and big downloads)
+                if [ ! -e "${DC_DATA_DIR}/cve.db" ] && [ ! -e "${DC_DATA_DIR}/odc.mv.db" ]; then
+                  timeout 20m bash -c '
+                    mvn -B org.owasp:dependency-check-maven:update-only \
+                       -DnvdApiKey='${NVD_API_KEY}' \
+                       -DdataDirectory="${DC_DATA_DIR}"
+                  ' || echo "Bootstrap update skipped"
+                fi
+
                 mvn -B org.owasp:dependency-check-maven:check \
                    -DnvdApiKey=${NVD_API_KEY} \
                    -DdataDirectory="${DC_DATA_DIR}" \
@@ -61,10 +68,9 @@ pipeline {
                    -DfailOnCVSS=11 \
                    -DskipTests
 
-                # Do not keep any reports/artifacts
                 find . -type f -name "dependency-check-report.*" -delete || true
                 find . -path "*/target" -type f -name "dependency-check*" -delete || true
-              """
+              '''
             }
           }
         }
