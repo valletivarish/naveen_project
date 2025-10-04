@@ -2,8 +2,12 @@ pipeline {
     agent any
 
     tools {
-        maven 'Maven3'   // Ensure "Maven3" is configured in Manage Jenkins → Global Tool Configuration
-        jdk 'JDK17'      // Ensure "JDK17" is configured there too
+        maven 'Maven3'
+        jdk 'JDK17'
+    }
+
+    environment {
+        SONAR_TOKEN_ID = 'SONAR_TOKEN'
     }
 
     stages {
@@ -20,11 +24,30 @@ pipeline {
                 sh 'mvn -B -DskipTests clean package'
             }
         }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
+                    sh """
+                        mvn -B sonar:sonar \
+                          -DskipTests \
+                          -Dsonar.projectKey=petclinic \
+                          -Dsonar.projectName="petclinic" \
+                          -Dsonar.host.url=http://localhost:9000 \
+                          -Dsonar.token=${SONAR_TOKEN}
+                    """
+                }
+            }
+        }
     }
 
     post {
         success {
             archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            echo "Build & Sonar completed successfully."
+        }
+        failure {
+            echo "Build or Sonar failed — check the console output."
         }
     }
 }
