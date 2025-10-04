@@ -45,44 +45,62 @@ pipeline {
 
     stage('SCA - OWASP Dependency-Check') {
       steps {
-        // Use the NVD API key from Jenkins credentials
         withCredentials([string(credentialsId: env.NVD_API_ID, variable: 'NVD_API_KEY')]) {
-          // ensure the report directory exists
-          sh "mkdir -p ${DC_REPORT_DIR}"
+          script {
+            // prepare workspace & debug before running
+            sh """
+              set -x
+              echo ">>> WORKSPACE: ${WORKSPACE}"
+              mkdir -p "${WORKSPACE}/${DC_REPORT_DIR}"
+              ls -la "${WORKSPACE}" || true
+              ls -la "${WORKSPACE}/${DC_REPORT_DIR}" || true
+              echo ">>> Starting OWASP dependency-check (this may download NVD DB and take time)"
+            """
 
-          // Run Dependency-Check in Docker. This writes ALL formats into workspace/${DC_REPORT_DIR}
-          // Note: `|| true` prevents failing the whole pipeline if dependency-check returns non-zero;
-          // remove it if you want the pipeline to fail on findings.
-          sh """
-            docker run --rm \
-              -v "${WORKSPACE}:/src" \
-              -v "${WORKSPACE}/${DC_REPORT_DIR}:/report" \
-              owasp/dependency-check:latest \
-              --project "spring-petclinic" \
-              --scan /src \
-              --format ALL \
-              --out /report \
-              --nvdApiKey ${NVD_API_KEY} || true
-          """
-        }
-      }
+            // run dependency-check docker container (no '|| true' so failures surface)
+            sh """
+              docker run --rm \
+                -v "${WORKSPACE}:/src" \
+                -v "${WORKSPACE}/${DC_REPORT_DIR}:/report" \
+                owasp/dependency-check:latest \
+                --project "spring-petclinic" \
+                --scan /src \
+                --format ALL \
+                --out /report \
+                --nvdApiKey ${NVD_API_KEY}
+            """
+
+            // list results
+            sh """
+              echo '>>> After docker run: listing report dir:'
+              ls -la "${WORKSPACE}/${DC_REPORT_DIR}" || true
+              echo '>>> HTML files (if any):'
+              ls -la "${WORKSPACE}/${DC_REPORT_DIR}"/*.html || true
+            """
+
+            // validate reports exist; fail with a clear message if missing
+            def out = sh(script: "test -d \"${WORKSPACE}/${DC_REPORT_DIR}\" -a -n \"\$(ls -A ${WORKSPACE}/${DC_REPORT_DIR} 2>/dev/null)\" && echo OK || echo MISSING", returnStdout: true).trim()
+            if (out != 'OK') {
+              error "Dependency-Check did not produce any reports in ${WORKSPACE}/${DC_REPORT_DIR} — check console output above for docker errors or NVD DB download issues."
+            }
+          } // script
+        } // withCredentials
+      } // steps
+
       post {
         always {
-          // archive the report files (all formats)
           archiveArtifacts artifacts: "${DC_REPORT_DIR}/**/*", fingerprint: true
-
-          // publish HTML (requires HTML Publisher plugin)
-          publishHTML (target: [
+          publishHTML target: [
             reportDir: "${DC_REPORT_DIR}",
             reportFiles: 'dependency-check-report.html',
             reportName: 'Dependency-Check Report',
             keepAll: true
-          ])
+          ]
         }
       }
     }
 
-    // you will add Checkov & Trivy later as separate stages
+    // later we will add Checkov & Trivy stages
   }
 
   post {
