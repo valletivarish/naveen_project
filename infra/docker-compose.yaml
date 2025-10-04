@@ -1,0 +1,5 @@
+version: "3"
+services:
+  insecure-service:
+    image: nginx:latest
+    privileged: true   # ❌ insecure: container has full root privileges

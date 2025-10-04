@@ -49,3 +49,34 @@ out/
 _site/
 *.css
 !petclinic.css
+
+
+# Maven / Java
+/target/
+/*.log
+*.class
+*.jar
+
+# Dependency-check cache / reports (optional)
+dependency-check-report/
+dependency-check-data/
+
+# Checkov / Trivy / other scan outputs
+checkov-report.*
+trivy-report.json
+
+# IDEs
+/.idea/
+/.vscode/
+/*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Dockerfile text backups
+DockerFile.txt
+
+# node / python (if present)
+node_modules/
+__pycache__/
