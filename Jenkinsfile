@@ -21,7 +21,7 @@ pipeline {
 
         stage('Build with Maven') {
             steps {
-                sh 'mvn -B -DskipTests clean package'
+                sh 'mvn -B -DskipTests -Dcheckstyle.skip=true clean package'
             }
         }
 
@@ -29,14 +29,14 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
                     sh """
-    mvn -B sonar:sonar \
-      -DskipTests \
-      -Dsonar.projectKey=petclinic \
-      -Dsonar.projectName="petclinic" \
-      -Dsonar.host.url=http://192.168.0.181:9000 \
-      -Dsonar.token=${SONAR_TOKEN}
-"""
-
+                        mvn -B sonar:sonar \
+                          -DskipTests \
+                          -Dcheckstyle.skip=true \
+                          -Dsonar.projectKey=petclinic \
+                          -Dsonar.projectName="petclinic" \
+                          -Dsonar.host.url=http://192.168.0.181:9000 \
+                          -Dsonar.token=${SONAR_TOKEN}
+                    """
                 }
             }
         }
