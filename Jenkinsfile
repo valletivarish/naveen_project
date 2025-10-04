@@ -101,7 +101,6 @@ pipeline {
           }
         }
       }
-
       post {
         always {
           archiveArtifacts artifacts: 'target/dependency-check-report.html', fingerprint: true
@@ -120,33 +119,49 @@ pipeline {
       steps {
         script {
           def imgTag = "petclinic-app:${env.BUILD_NUMBER}"
-
-          sh """
-            echo '>>> Building Docker image: ${imgTag}'
-            docker build -t ${imgTag} .
-            docker images ${imgTag} || true
-          """
-
-          sh """
-            echo '>>> Running Trivy (this may fetch vuln DB on first run)'
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-              aquasec/trivy:latest image --scanners vuln --format json --output trivy-report.json ${imgTag} || true
-          """
-
           sh '''
-            if [ -f trivy-report.json ]; then
-              jq '{Results: .}' trivy-report.json > trivy-summary.json || true
-              echo "<html><body><h3>Trivy report (summary)</h3><pre>" > trivy-summary.html || true
-              jq . trivy-report.json >> trivy-summary.html || true
-              echo "</pre></body></html>" >> trivy-summary.html || true
+            set +e
+            if command -v docker >/dev/null 2>&1; then
+              echo ">>> Docker detected. Building image and scanning with Trivy image scanner."
+              docker build -t '"${imgTag}"' .
+              docker images '"${imgTag}"' || true
+
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                -v "$PWD:/work" -w /work \
+                aquasec/trivy:latest image --scanners vuln \
+                --format json --output trivy-report.json '"${imgTag}"' || true
+
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                -v "$PWD:/work" -w /work \
+                aquasec/trivy:latest image --scanners vuln \
+                --format table --output trivy-summary.txt '"${imgTag}"' || true
+            else
+              echo ">>> Docker not found. Falling back to Trivy filesystem scan."
+              docker --version 2>/dev/null || true
+              docker ps 2>/dev/null || true
+
+              docker run --rm -v "$PWD:/work" -w /work \
+                aquasec/trivy:latest fs --scanners vuln \
+                --format json --output trivy-report.json /work || true
+
+              docker run --rm -v "$PWD:/work" -w /work \
+                aquasec/trivy:latest fs --scanners vuln \
+                --format table --output trivy-summary.txt /work || true
+            fi
+
+            if [ -f trivy-summary.txt ]; then
+              {
+                echo "<html><body><h3>Trivy Summary</h3><pre>";
+                cat trivy-summary.txt;
+                echo "</pre></body></html>";
+              } > trivy-summary.html || true
             fi
           '''
         }
       }
-
       post {
         always {
-          archiveArtifacts artifacts: 'trivy-report.json, trivy-summary.html', fingerprint: true
+          archiveArtifacts artifacts: 'trivy-report.json, trivy-summary.html, trivy-summary.txt', fingerprint: true
           publishHTML target: [
             reportDir: '.',
             reportFiles: 'trivy-summary.html',
