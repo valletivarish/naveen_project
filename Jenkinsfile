@@ -8,7 +8,7 @@ pipeline {
 
   environment {
     SONAR_TOKEN_ID = 'SONAR_TOKEN'
-    NVD_API_ID    = 'NVD_API_KEY'   // Jenkins credential ID for NVD API key
+    NVD_API_ID    = 'NVD_API_key'   // Jenkins credential ID for NVD API key
   }
 
   stages {
