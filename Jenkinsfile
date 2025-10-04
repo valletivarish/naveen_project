@@ -1,30 +1,30 @@
-// Jenkinsfile - Step 1: checkout + build (minimal)
 pipeline {
-  agent any
+    agent any
 
-  stages {
-    stage('Checkout') {
-      steps {
-        checkout scm
-      }
+    tools {
+        maven 'Maven3'   // Ensure "Maven3" is configured in Manage Jenkins → Global Tool Configuration
+        jdk 'JDK17'      // Ensure "JDK17" is configured there too
     }
 
-    stage('Build (Maven)') {
-      steps {
-        // Use wrapper if available; skip tests and skip checkstyle to avoid build-break on style errors
-        sh './mvnw -B -DskipTests=true -Dcheckstyle.skip=true clean package'
-      }
-      post {
-        always {
-          archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'github-pat',
+                    url: 'https://github.com/valletivarish/naveen_project.git'
+            }
         }
-      }
-    }
-  }
 
-  post {
-    always {
-      echo "Pipeline finished with status: ${currentBuild.currentResult}"
+        stage('Build with Maven') {
+            steps {
+                sh 'mvn -B -DskipTests clean package'
+            }
+        }
     }
-  }
+
+    post {
+        success {
+            archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+        }
+    }
 }
