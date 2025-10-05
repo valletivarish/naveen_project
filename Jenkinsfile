@@ -1,5 +1,5 @@
 pipeline {
-  agent any
+  agent { label 'docker' }
 
   parameters {
     string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Git branch to build (e.g. main or test/scanner-check)')
@@ -17,18 +17,27 @@ pipeline {
     DC_LOCAL_DIR     = '.dc-data-ro'
     DC_UPDATE_DIR    = '.dc-data-update'
     DC_FRESH_HOURS   = '24'
-
     TRIVY_VER        = '0.55.0'
     TRIVY_CACHE_DIR  = '/var/jenkins_home/trivy-cache'
     TRIVY_FRESH_HOURS= '12'
     TRIVY_SEVERITY   = 'LOW,MEDIUM,HIGH,CRITICAL'
     TRIVY_STRICT_SEV = 'HIGH,CRITICAL'
     TRIVY_IGNORE_UNFIXED = 'false'
-
     IMAGE_NAME       = 'petclinic-app'
   }
 
   stages {
+    stage('Preflight: Docker & Permissions') {
+      steps {
+        sh '''
+          set -e
+          if ! command -v docker >/dev/null 2>&1; then echo "docker CLI not found"; exit 1; fi
+          docker version >/dev/null || { echo "Cannot talk to Docker daemon"; exit 1; }
+          docker run --rm hello-world >/dev/null 2>&1 || { echo "Cannot run containers (check socket permissions)"; exit 1; }
+        '''
+      }
+    }
+
     stage('Checkout') {
       steps {
         script {
@@ -57,7 +66,6 @@ pipeline {
             CANDS="${SONAR_HOST_URL:-} http://localhost:9000 http://127.0.0.1:9000 http://${GATEWAY_IP}:9000 http://host.docker.internal:9000 http://${FIRST_IPV4}:9000 http://${HOST_IP_ALT}:9000"
             for u in $CANDS; do if probe "$u"; then SURL="$u"; break; fi; done
             if [ -z "$SURL" ]; then echo "WARN: no reachable SonarQube; skipping analysis."; exit 0; fi
-            echo "Using SonarQube: $SURL"
             mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:4.0.0.4121:sonar \
               -DskipTests -Dcheckstyle.skip=true \
               -Dsonar.projectKey=petclinic -Dsonar.projectName="petclinic" \
@@ -76,14 +84,11 @@ pipeline {
               mkdir -p "${DC_CACHE_DIR}"
               rm -rf "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
               mkdir -p "${DC_LOCAL_DIR}" "${DC_UPDATE_DIR}"
-
               FRESH_SECS=$(( ${DC_FRESH_HOURS:-24} * 3600 ))
               DB_PATH=""
               if [ -e "${DC_CACHE_DIR}/odc.mv.db" ]; then DB_PATH="${DC_CACHE_DIR}/odc.mv.db"; elif [ -e "${DC_CACHE_DIR}/cve.db" ]; then DB_PATH="${DC_CACHE_DIR}/cve.db"; fi
-
               IS_FRESH=0
               if [ -n "$DB_PATH" ]; then AGE=$(( $(date +%s) - $(stat -c %Y "$DB_PATH") )); [ $AGE -lt $FRESH_SECS ] && IS_FRESH=1; fi
-
               if [ $IS_FRESH -eq 0 ]; then
                 set +e
                 timeout 25m sh -c 'mvn -B org.owasp:dependency-check-maven:update-only -DnvdApiKey='"${NVD_API_KEY}"' -DdataDirectory="'"${DC_UPDATE_DIR}"'"'
@@ -93,22 +98,17 @@ pipeline {
                   cp -R "${DC_UPDATE_DIR}/." "${DC_CACHE_DIR}/"
                 fi
               fi
-
               if [ ! -e "${DC_CACHE_DIR}/odc.mv.db" ] && [ ! -e "${DC_CACHE_DIR}/cve.db" ]; then
                 echo "No NVD DB; skipping Dependency-Check."; exit 0
               fi
-
               rm -rf "${DC_LOCAL_DIR:?}/"* || true
               cp -R "${DC_CACHE_DIR}/." "${DC_LOCAL_DIR}/" || true
               rm -f "${DC_LOCAL_DIR}/odc.update.lock" || true
-
               mvn -B org.owasp:dependency-check-maven:check \
                  -DnvdApiKey='${NVD_API_KEY}' -DdataDirectory="${DC_LOCAL_DIR}" \
                  -DautoUpdate=false -DnvdValidForHours=${DC_FRESH_HOURS} -DfailOnCVSS=11 -DskipTests \
                  -Daggregate -Dformats=HTML,JSON
-
               if [ -f target/dependency-check-report.json ]; then
-                echo ">>> Sanity check: searching for vulnerable libs in JSON"
                 grep -E -i 'log4j-core|commons-collections' target/dependency-check-report.json || echo "Not found in JSON"
               fi
             '''
@@ -124,14 +124,12 @@ pipeline {
     }
 
     stage('Build Docker Image') {
-      when { expression { sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0 } }
       steps {
         script {
           env.IMAGE_TAG = "${env.BUILD_NUMBER}"
         }
         sh '''
           set -e
-          echo "Building image ${IMAGE_NAME}:${IMAGE_TAG}"
           docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
           docker images "${IMAGE_NAME}:${IMAGE_TAG}" || true
         '''
@@ -139,7 +137,6 @@ pipeline {
     }
 
     stage('Container Scan (Trivy in Docker)') {
-      when { expression { sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0 } }
       steps {
         script {
           env.IMAGE_TAG = env.IMAGE_TAG ?: "${env.BUILD_NUMBER}"
@@ -199,9 +196,11 @@ pipeline {
               -v "${WORKDIR}:/workspace" -w /workspace \
               "aquasec/trivy:v${TRIVY_VER}" convert --format sarif --output trivy-report.sarif trivy-report.json || true
           fi
-          TOTAL=$(jq -r '.. | .Vulnerabilities? // empty | length' trivy-report.json 2>/dev/null | awk '{s+=$1} END{print s+0}' || echo 0)
-          HIGH=$(jq -r '.. | .Severity? // empty' trivy-report.json 2>/dev/null | grep -c '^HIGH$' || true)
-          CRIT=$(jq -r '.. | .Severity? // empty' trivy-report.json 2>/dev/null | grep -c '^CRITICAL$' || true)
+          if ! command -v jq >/dev/null 2>&1; then TOTAL=0; HIGH=0; CRIT=0; else
+            TOTAL=$(jq -r '.. | .Vulnerabilities? // empty | length' trivy-report.json 2>/dev/null | awk '{s+=$1} END{print s+0}' || echo 0)
+            HIGH=$(jq -r '.. | .Severity? // empty' trivy-report.json 2>/dev/null | grep -c '^HIGH$' || true)
+            CRIT=$(jq -r '.. | .Severity? // empty' trivy-report.json 2>/dev/null | grep -c '^CRITICAL$' || true)
+          fi
           {
             echo "<html><head><meta charset='utf-8'><style>body{font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial} table{border-collapse:collapse;width:100%} th,td{border:1px solid #ddd;padding:6px} th{background:#f3f4f6;text-align:left}</style></head><body>"
             echo "<h2>Trivy Summary (Image & SBOM)</h2>"
@@ -222,7 +221,6 @@ pipeline {
     }
 
     stage('IaC Scan (Checkov)') {
-      when { expression { sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0 } }
       steps {
         sh '''
           set -e
