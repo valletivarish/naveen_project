@@ -24,6 +24,8 @@ pipeline {
     TRIVY_SEVERITY   = 'LOW,MEDIUM,HIGH,CRITICAL'
     TRIVY_STRICT_SEV = 'HIGH,CRITICAL'
     TRIVY_IGNORE_UNFIXED = 'false'
+
+    IMAGE_NAME       = 'petclinic-app'
   }
 
   stages {
@@ -121,122 +123,125 @@ pipeline {
       }
     }
 
-    stage('Container Build & Scan (Trivy)') {
+    stage('Build Docker Image') {
+      when { expression { sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0 } }
       steps {
         script {
-          def imgTag = "petclinic-app:${env.BUILD_NUMBER}"
-          sh '''
-            set -e
-            mkdir -p "${TRIVY_CACHE_DIR}"
-            TRIVY_BIN="./trivy"
-            if ! [ -x "$TRIVY_BIN" ]; then
-              curl -sSL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_Linux-64bit.tar.gz"
-              tar -xzf trivy.tgz trivy && chmod +x trivy
-            fi
-            if ! command -v jq >/dev/null 2>&1; then
-              curl -sSL -o jq https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64 || curl -sSL -o jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
-              chmod +x jq
-              JQ="./jq"
-            else
-              JQ="jq"
-            fi
+          env.IMAGE_TAG = "${env.BUILD_NUMBER}"
+        }
+        sh '''
+          set -e
+          echo "Building image ${IMAGE_NAME}:${IMAGE_TAG}"
+          docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+          docker images "${IMAGE_NAME}:${IMAGE_TAG}" || true
+        '''
+      }
+    }
 
+    stage('Container Scan (Trivy in Docker)') {
+      when { expression { sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0 } }
+      steps {
+        script {
+          env.IMAGE_TAG = env.IMAGE_TAG ?: "${env.BUILD_NUMBER}"
+        }
+        sh '''
+          set -e
+          mkdir -p "${TRIVY_CACHE_DIR}"
+          mkdir -p reports
+          docker pull "aquasec/trivy:v${TRIVY_VER}" >/dev/null
+          WORKDIR="$(pwd)"
+          docker run --rm \
+            -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
+            -v "/var/run/docker.sock:/var/run/docker.sock" \
+            -v "${WORKDIR}:/workspace" -w /workspace \
+            "aquasec/trivy:v${TRIVY_VER}" image \
+              --scanners vuln \
+              --severity "${TRIVY_SEVERITY}" \
+              $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
+              --format json --output trivy-image.json \
+              --timeout 10m \
+              "${IMAGE_NAME}:${IMAGE_TAG}" || true
+          docker run --rm \
+            -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
+            -v "/var/run/docker.sock:/var/run/docker.sock" \
+            -v "${WORKDIR}:/workspace" -w /workspace \
+            "aquasec/trivy:v${TRIVY_VER}" image \
+              --scanners vuln \
+              --severity "${TRIVY_SEVERITY}" \
+              $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
+              --format table --output trivy-summary.txt \
+              --timeout 10m \
+              "${IMAGE_NAME}:${IMAGE_TAG}" || true
+          if [ ! -f target/bom.json ] && [ -f pom.xml ]; then
             mvn -B org.cyclonedx:cyclonedx-maven-plugin:2.8.0:makeAggregateBom \
-              -DskipTests -Dcyclonedx.skip=false \
-              -Dcyclonedx.output.format=json \
+              -DskipTests -Dcyclonedx.output.format=json \
               -Dcyclonedx.output.name=bom \
               -Dcyclonedx.includeBomSerialNumber=true \
               -Dcyclonedx.include.components=true \
-              -Dcyclonedx.include.dependencies=true
-
-            SBOM_PATH="target/bom.json"
-            [ -f "$SBOM_PATH" ] || SBOM_PATH="bom.json"
-            if [ ! -f "$SBOM_PATH" ]; then
-              echo "ERROR: SBOM not found (expected target/bom.json or bom.json)"; exit 1
-            fi
-
-            TARGET_FILE="$(ls target/*.jar 2>/dev/null | head -n1 || true)"; [ -z "$TARGET_FILE" ] && TARGET_FILE="."
-            NOW=$(date +%s); FRESH_SECS=$(( ${TRIVY_FRESH_HOURS:-12} * 3600 ))
-            META="${TRIVY_CACHE_DIR}/db/metadata.json"; SKIP_ARGS=""
-            if [ -f "$META" ]; then AGE=$(( NOW - $(stat -c %Y "$META") )); [ $AGE -lt $FRESH_SECS ] && SKIP_ARGS="--skip-db-update --offline-scan"; fi
-            [ -n "$SKIP_ARGS" ] && echo "Trivy cache fresh; using ${SKIP_ARGS}." || echo "No/old cache; first scan may download DB."
-
-            if command -v docker >/dev/null 2>&1; then
-              echo ">>> Docker detected. Building image and scanning."
-              docker build -t '"${imgTag}"' .
-              docker images '"${imgTag}"' || true
-
-              "$TRIVY_BIN" image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
-                --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
-                --timeout 10m --format json --output trivy-image.json '"${imgTag}"' || true
-
-              "$TRIVY_BIN" sbom --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
-                --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
-                --timeout 10m --format json --output trivy-sbom.json "$SBOM_PATH" || true
-
-              if [ -s trivy-sbom.json ]; then cp trivy-sbom.json trivy-report.json; else cp trivy-image.json trivy-report.json || true; fi
-
-              "$TRIVY_BIN" image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
-                --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
-                --timeout 10m --format table --output trivy-summary.txt '"${imgTag}"' || true
-            else
-              echo ">>> Docker not found. Scanning SBOM."
-              "$TRIVY_BIN" sbom --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
-                --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
-                --timeout 10m --format json --output trivy-report.json "$SBOM_PATH" || true
-
-              "$TRIVY_BIN" sbom --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
-                --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
-                --timeout 10m --format table --output trivy-summary.txt "$SBOM_PATH" || true
-            fi
-
-            if [ -s trivy-report.json ]; then
-              "$TRIVY_BIN" convert --format sarif --output trivy-report.sarif trivy-report.json || true
-            fi
-
-            HIGH=0; CRIT=0; TOTAL=0
-            if [ -s trivy-report.json ]; then
-              HIGH=$($JQ -r '.. | .Severity? // empty' trivy-report.json | grep -c '^HIGH$' || true)
-              CRIT=$($JQ -r '.. | .Severity? // empty' trivy-report.json | grep -c '^CRITICAL$' || true)
-              TOTAL=$($JQ -r '.. | .Vulnerabilities? // empty | length' trivy-report.json | awk '{s+=$1} END{print s+0}' || echo 0)
-            fi
-
-            if [ ! -s trivy-summary.txt ]; then
-              {
-                echo "Trivy SBOM scan summary."
-                echo "Findings (all severities): TOTAL=${TOTAL}, CRITICAL=${CRIT}, HIGH=${HIGH}"
-                echo "Severity filter: ${TRIVY_SEVERITY}  ignore-unfixed=${TRIVY_IGNORE_UNFIXED}"
-                echo "SBOM: ${SBOM_PATH}"
-                [ -n "$TARGET_FILE" ] && echo "Target JAR: ${TARGET_FILE}"
-              } > trivy-summary.txt
-            fi
-
-            {
-              echo "<html><head><meta charset='utf-8'><style>body{font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial} table{border-collapse:collapse;width:100%} th,td{border:1px solid #ddd;padding:6px} th{background:#f3f4f6;text-align:left}</style></head><body>"
-              echo "<h2>Trivy Summary (SBOM)</h2>"
-              echo "<p><b>Total</b>: ${TOTAL} &nbsp; <b>Critical</b>: ${CRIT} &nbsp; <b>High</b>: ${HIGH}</p>"
-              echo "<pre>"
-              sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' trivy-summary.txt
-              echo "</pre>"
-              if [ -s trivy-report.json ]; then
-                echo "<h3>Top Findings (${TRIVY_STRICT_SEV})</h3>"
-                echo "<table><tr><th>Severity</th><th>ID</th><th>Pkg</th><th>Installed</th><th>Fixed</th><th>Title</th></tr>"
-                $JQ -r --arg sev "${TRIVY_STRICT_SEV}" '
-                  .Results[]?.Vulnerabilities[]? |
-                  select((.Severity|tostring) as $s | ($sev|split(",")) | index($s)) |
-                  [.Severity, .VulnerabilityID, .PkgName, .InstalledVersion, (.FixedVersion//"-"), (.Title//"-")]
-                ' trivy-report.json 2>/dev/null | head -n 200 | awk -F'\t' 'BEGIN{OFS="</td><td>"} {gsub(/&/,"&amp;"); gsub(/</,"&lt;"); print "<tr><td>"$1,$2,$3,$4,$5,$6"</td></tr>"}'
-                echo "</table>"
-              fi
-              echo "</body></html>"
-            } > trivy-summary.html
-          '''
-        }
+              -Dcyclonedx.include.dependencies=true || true
+          fi
+          SBOM_PATH="target/bom.json"; [ -f "$SBOM_PATH" ] || SBOM_PATH="bom.json"
+          if [ -f "$SBOM_PATH" ]; then
+            docker run --rm \
+              -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
+              -v "${WORKDIR}:/workspace" -w /workspace \
+              "aquasec/trivy:v${TRIVY_VER}" sbom \
+                --scanners vuln \
+                --severity "${TRIVY_SEVERITY}" \
+                $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
+                --format json --output trivy-sbom.json \
+                --timeout 10m \
+                "$SBOM_PATH" || true
+          fi
+          if [ -s trivy-sbom.json ]; then cp trivy-sbom.json trivy-report.json; else cp trivy-image.json trivy-report.json || true; fi
+          if [ -s trivy-report.json ]; then
+            docker run --rm \
+              -v "${WORKDIR}:/workspace" -w /workspace \
+              "aquasec/trivy:v${TRIVY_VER}" convert --format sarif --output trivy-report.sarif trivy-report.json || true
+          fi
+          TOTAL=$(jq -r '.. | .Vulnerabilities? // empty | length' trivy-report.json 2>/dev/null | awk '{s+=$1} END{print s+0}' || echo 0)
+          HIGH=$(jq -r '.. | .Severity? // empty' trivy-report.json 2>/dev/null | grep -c '^HIGH$' || true)
+          CRIT=$(jq -r '.. | .Severity? // empty' trivy-report.json 2>/dev/null | grep -c '^CRITICAL$' || true)
+          {
+            echo "<html><head><meta charset='utf-8'><style>body{font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial} table{border-collapse:collapse;width:100%} th,td{border:1px solid #ddd;padding:6px} th{background:#f3f4f6;text-align:left}</style></head><body>"
+            echo "<h2>Trivy Summary (Image & SBOM)</h2>"
+            echo "<p><b>Total</b>: ${TOTAL} &nbsp; <b>Critical</b>: ${CRIT} &nbsp; <b>High</b>: ${HIGH}</p>"
+            echo "<pre>"
+            sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' trivy-summary.txt 2>/dev/null || true
+            echo "</pre>"
+            echo "</body></html>"
+          } > trivy-summary.html
+        '''
       }
       post {
         always {
           archiveArtifacts artifacts: 'trivy-report.json,trivy-image.json,trivy-sbom.json,trivy-report.sarif,trivy-summary.txt,trivy-summary.html', fingerprint: true, allowEmptyArchive: true
           publishHTML target: [reportDir: '.', reportFiles: 'trivy-summary.html', reportName: 'Trivy — Full Report', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true]
+        }
+      }
+    }
+
+    stage('IaC Scan (Checkov)') {
+      when { expression { sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) == 0 } }
+      steps {
+        sh '''
+          set -e
+          mkdir -p reports/checkov
+          WORKDIR="$(pwd)"
+          docker run --rm -v "${WORKDIR}:/project" -w /project bridgecrew/checkov:latest \
+            -d /project/infra -o json --output-file-path ./reports/checkov,checkov.json || true
+          docker run --rm -v "${WORKDIR}:/project" -w /project bridgecrew/checkov:latest \
+            -d /project/infra -o sarif --output-file-path ./reports/checkov,checkov.sarif || true
+          docker run --rm -v "${WORKDIR}:/project" -w /project bridgecrew/checkov:latest \
+            -d /project/infra -o junitxml --output-file-path ./reports/checkov,checkov-junit.xml || true
+          docker run --rm -v "${WORKDIR}:/project" -w /project bridgecrew/checkov:latest \
+            -d /project/infra -o html --output-file-path ./reports/checkov,checkov.html || true
+        '''
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'reports/checkov/*', fingerprint: true, allowEmptyArchive: true
+          publishHTML target: [reportDir: 'reports/checkov', reportFiles: 'checkov.html', reportName: 'Checkov — IaC Report', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true]
         }
       }
     }
