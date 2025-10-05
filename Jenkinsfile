@@ -1,5 +1,5 @@
 pipeline {
-  agent { label 'docker' }
+  agent any
 
   parameters {
     string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Git branch to build (e.g. main or test/scanner-check)')
