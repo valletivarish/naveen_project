@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insecure-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: insecure-app
+  template:
+    metadata:
+      labels:
+        app: insecure-app
+    spec:
+      containers:
+      - name: insecure-container
+        image: nginx:1.14   # old vulnerable version
+        securityContext:
+          runAsUser: 0       # runs as root
+          allowPrivilegeEscalation: true
+        ports:
+        - containerPort: 80
+        env:
+        - name: PASSWORD
+          value: "superinsecure"

@@ -1,46 +1,80 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
     <version>3.5.0</version>
-    <relativePath></relativePath>
+    <relativePath/>
   </parent>
 
   <groupId>org.springframework.samples</groupId>
   <artifactId>spring-petclinic</artifactId>
   <version>3.5.0-SNAPSHOT</version>
-
   <name>petclinic</name>
 
   <properties>
-
-    <!-- Generic properties -->
+    <!-- Build / Java -->
     <java.version>17</java.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <!-- Important for reproducible builds. Update using e.g. ./mvnw versions:set -DnewVersion=... -->
     <project.build.outputTimestamp>2024-11-28T14:37:52Z</project.build.outputTimestamp>
 
-    <!-- Web dependencies -->
+    <!-- Plugin / tool versions -->
+    <checkstyle.version>10.25.0</checkstyle.version>
+    <maven-checkstyle.version>3.6.0</maven-checkstyle.version>
+    <nohttp-checkstyle.version>0.0.11</nohttp-checkstyle.version>
+    <spring-format.version>0.0.46</spring-format.version>
+    <jacoco.version>0.8.13</jacoco.version>
+    <libsass.version>0.3.4</libsass.version>
+    <lifecycle-mapping>1.0.0</lifecycle-mapping>
+
+    <!-- Webjars -->
     <webjars-locator.version>1.1.0</webjars-locator.version>
     <webjars-bootstrap.version>5.3.6</webjars-bootstrap.version>
     <webjars-font-awesome.version>4.7.0</webjars-font-awesome.version>
 
-    <checkstyle.version>10.25.0</checkstyle.version>
-    <jacoco.version>0.8.13</jacoco.version>
-    <libsass.version>0.3.4</libsass.version>
-    <lifecycle-mapping>1.0.0</lifecycle-mapping>
-    <maven-checkstyle.version>3.6.0</maven-checkstyle.version>
-    <nohttp-checkstyle.version>0.0.11</nohttp-checkstyle.version>
-    <spring-format.version>0.0.46</spring-format.version>
-
+    <!-- CycloneDX and DC plugin versions -->
+    <cyclonedx.maven.plugin.version>2.8.0</cyclonedx.maven.plugin.version>
+    <dependency.check.maven.plugin.version>10.0.4</dependency.check.maven.plugin.version>
   </properties>
 
+  <!-- Force specific (older) versions when we intentionally add them -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.apache.logging.log4j</groupId>
+        <artifactId>log4j-core</artifactId>
+        <version>2.14.1</version>
+      </dependency>
+      <dependency>
+        <groupId>commons-collections</groupId>
+        <artifactId>commons-collections</artifactId>
+        <version>3.2.1</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.9.9</version>
+      </dependency>
+      <dependency>
+        <groupId>org.yaml</groupId>
+        <artifactId>snakeyaml</artifactId>
+        <version>1.26</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-compress</artifactId>
+        <version>1.20</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
   <dependencies>
-    <!-- Spring and Spring Boot dependencies -->
+    <!-- Spring Boot app deps -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
@@ -65,13 +99,8 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-thymeleaf</artifactId>
     </dependency>
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-test</artifactId>
-      <scope>test</scope>
-    </dependency>
 
-    <!-- Databases - Uses H2 by default -->
+    <!-- DBs (H2 runtime by default, others optional) -->
     <dependency>
       <groupId>com.h2database</groupId>
       <artifactId>h2</artifactId>
@@ -88,15 +117,14 @@
       <scope>runtime</scope>
     </dependency>
 
-   <dependency>
-    <groupId>org.springdoc</groupId>
-    <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-    <version>2.3.0</version>
-</dependency>
+    <!-- OpenAPI UI -->
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>2.3.0</version>
+    </dependency>
 
-
-
-    <!-- Caching -->
+    <!-- Caching APIs -->
     <dependency>
       <groupId>javax.cache</groupId>
       <artifactId>cache-api</artifactId>
@@ -123,6 +151,12 @@
       <version>${webjars-font-awesome.version}</version>
     </dependency>
 
+    <!-- Test utilities -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-devtools</artifactId>
@@ -149,42 +183,62 @@
       <scope>test</scope>
     </dependency>
 
-    <dependency>
-  <groupId>org.apache.logging.log4j</groupId>
-  <artifactId>log4j-core</artifactId>
-  <version>2.14.1</version> <!-- CVE-2021-44228 -->
-</dependency>
-
-<dependency>
-  <groupId>commons-collections</groupId>
-  <artifactId>commons-collections</artifactId>
-  <version>3.2.1</version>
-</dependency>
-
-
-
+    <!-- Misc -->
     <dependency>
       <groupId>jakarta.xml.bind</groupId>
       <artifactId>jakarta.xml.bind-api</artifactId>
     </dependency>
 
+    <!-- =========================
+         Intentionally vulnerable libs (TEST SCOPE)
+         Included so Dependency-Check & SBOM (and Trivy SBOM scan) report issues.
+         ========================= -->
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-core</artifactId>
+      <version>2.14.1</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>commons-collections</groupId>
+      <artifactId>commons-collections</artifactId>
+      <version>3.2.1</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.9.9</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+      <version>1.26</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-compress</artifactId>
+      <version>1.20</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
     <plugins>
+      <!-- Enforce Java version -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
         <executions>
           <execution>
             <id>enforce-java</id>
-            <goals>
-              <goal>enforce</goal>
-            </goals>
+            <goals><goal>enforce</goal></goals>
             <configuration>
               <rules>
                 <requireJavaVersion>
-                  <message>This build requires at least Java ${java.version}, update your JVM, and run the build again</message>
+                  <message>This build requires at least Java ${java.version}</message>
                   <version>${java.version}</version>
                 </requireJavaVersion>
               </rules>
@@ -192,19 +246,20 @@
           </execution>
         </executions>
       </plugin>
+
+      <!-- Formatting / checks (unchanged) -->
       <plugin>
         <groupId>io.spring.javaformat</groupId>
         <artifactId>spring-javaformat-maven-plugin</artifactId>
         <version>${spring-format.version}</version>
         <executions>
           <execution>
-            <goals>
-              <goal>validate</goal>
-            </goals>
             <phase>validate</phase>
+            <goals><goal>validate</goal></goals>
           </execution>
         </executions>
       </plugin>
+
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-checkstyle-plugin</artifactId>
@@ -224,10 +279,8 @@
         <executions>
           <execution>
             <id>nohttp-checkstyle-validation</id>
-            <goals>
-              <goal>check</goal>
-            </goals>
             <phase>validate</phase>
+            <goals><goal>check</goal></goals>
             <configuration>
               <configLocation>src/checkstyle/nohttp-checkstyle.xml</configLocation>
               <sourceDirectories>${basedir}</sourceDirectories>
@@ -238,20 +291,14 @@
           </execution>
         </executions>
       </plugin>
-      <plugin>
-        <groupId>org.graalvm.buildtools</groupId>
-        <artifactId>native-maven-plugin</artifactId>
-      </plugin>
+
+      <!-- Spring Boot build info -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
         <executions>
           <execution>
-            <!-- Spring Boot Actuator displays build-related information
-              if a META-INF/build-info.properties file is present -->
-            <goals>
-              <goal>build-info</goal>
-            </goals>
+            <goals><goal>build-info</goal></goals>
             <configuration>
               <additionalProperties>
                 <encoding.source>${project.build.sourceEncoding}</encoding.source>
@@ -263,28 +310,25 @@
           </execution>
         </executions>
       </plugin>
+
+      <!-- JaCoCo -->
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
         <version>${jacoco.version}</version>
         <executions>
           <execution>
-            <goals>
-              <goal>prepare-agent</goal>
-            </goals>
+            <goals><goal>prepare-agent</goal></goals>
           </execution>
           <execution>
             <id>report</id>
-            <goals>
-              <goal>report</goal>
-            </goals>
             <phase>prepare-package</phase>
+            <goals><goal>report</goal></goals>
           </execution>
         </executions>
       </plugin>
 
-      <!-- Spring Boot Actuator displays build-related information if a git.properties file is
-      present at the classpath -->
+      <!-- Git properties for actuator -->
       <plugin>
         <groupId>io.github.git-commit-id</groupId>
         <artifactId>git-commit-id-maven-plugin</artifactId>
@@ -293,16 +337,46 @@
           <failOnUnableToExtractRepoInfo>false</failOnUnableToExtractRepoInfo>
         </configuration>
       </plugin>
-      <!-- Spring Boot Actuator displays sbom-related information if a CycloneDX SBOM file is
-      present at the classpath -->
+
+      <!-- CycloneDX SBOM (configured to include test scope!) -->
       <plugin>
-        <?m2e ignore?>
         <groupId>org.cyclonedx</groupId>
         <artifactId>cyclonedx-maven-plugin</artifactId>
+        <version>${cyclonedx.maven.plugin.version}</version>
+        <configuration>
+          <includeBomSerialNumber>true</includeBomSerialNumber>
+          <includeComponents>true</includeComponents>
+          <includeDependencies>true</includeDependencies>
+          <schemaVersion>1.6</schemaVersion>
+          <outputFormat>json</outputFormat>
+          <outputName>bom</outputName>
+          <includeTestScope>true</includeTestScope>
+          <!-- also include optional & provided to surface more in SBOM -->
+          <includeProvidedScope>true</includeProvidedScope>
+          <includeOptionalDependencies>true</includeOptionalDependencies>
+        </configuration>
       </plugin>
 
+      <!-- OWASP Dependency-Check (don’t skip test scope) -->
+      <plugin>
+        <groupId>org.owasp</groupId>
+        <artifactId>dependency-check-maven</artifactId>
+        <version>${dependency.check.maven.plugin.version}</version>
+        <configuration>
+          <skipTestScope>false</skipTestScope>
+          <format>ALL</format> <!-- HTML, JSON, XML, JUNIT -->
+          <failOnCVSS>11</failOnCVSS> <!-- never fail the build -->
+        </configuration>
+      </plugin>
+
+      <!-- Native build plugin placeholder (unchanged) -->
+      <plugin>
+        <groupId>org.graalvm.buildtools</groupId>
+        <artifactId>native-maven-plugin</artifactId>
+      </plugin>
     </plugins>
   </build>
+
   <licenses>
     <license>
       <name>Apache License, Version 2.0</name>
@@ -312,41 +386,35 @@
 
   <repositories>
     <repository>
-      <snapshots>
-        <enabled>true</enabled>
-      </snapshots>
       <id>spring-snapshots</id>
       <name>Spring Snapshots</name>
       <url>https://repo.spring.io/snapshot</url>
+      <snapshots><enabled>true</enabled></snapshots>
     </repository>
     <repository>
-      <snapshots>
-        <enabled>false</enabled>
-      </snapshots>
       <id>spring-milestones</id>
       <name>Spring Milestones</name>
       <url>https://repo.spring.io/milestone</url>
+      <snapshots><enabled>false</enabled></snapshots>
     </repository>
   </repositories>
+
   <pluginRepositories>
     <pluginRepository>
-      <snapshots>
-        <enabled>true</enabled>
-      </snapshots>
       <id>spring-snapshots</id>
       <name>Spring Snapshots</name>
       <url>https://repo.spring.io/snapshot</url>
+      <snapshots><enabled>true</enabled></snapshots>
     </pluginRepository>
     <pluginRepository>
-      <snapshots>
-        <enabled>false</enabled>
-      </snapshots>
       <id>spring-milestones</id>
       <name>Spring Milestones</name>
       <url>https://repo.spring.io/milestone</url>
+      <snapshots><enabled>false</enabled></snapshots>
     </pluginRepository>
   </pluginRepositories>
 
+  <!-- Existing profiles (css, m2e) preserved -->
   <profiles>
     <profile>
       <id>css</id>
@@ -358,11 +426,8 @@
             <executions>
               <execution>
                 <id>unpack</id>
-                <goals>
-                  <goal>unpack</goal>
-                </goals>
-                <?m2e execute onConfiguration,onIncremental?>
                 <phase>generate-resources</phase>
+                <goals><goal>unpack</goal></goals>
                 <configuration>
                   <artifactItems>
                     <artifactItem>
@@ -376,7 +441,6 @@
               </execution>
             </executions>
           </plugin>
-
           <plugin>
             <groupId>com.gitlab.haynes</groupId>
             <artifactId>libsass-maven-plugin</artifactId>
@@ -388,29 +452,23 @@
             </configuration>
             <executions>
               <execution>
-                <?m2e execute onConfiguration,onIncremental?>
-                <goals>
-                  <goal>compile</goal>
-                </goals>
                 <phase>generate-resources</phase>
+                <goals><goal>compile</goal></goals>
               </execution>
             </executions>
           </plugin>
         </plugins>
       </build>
     </profile>
+
     <profile>
       <id>m2e</id>
       <activation>
-        <property>
-          <name>m2e.version</name>
-        </property>
+        <property><name>m2e.version</name></property>
       </activation>
       <build>
         <pluginManagement>
           <plugins>
-            <!-- This plugin's configuration is used to store Eclipse m2e settings
-              only. It has no influence on the Maven build itself. -->
             <plugin>
               <groupId>org.eclipse.m2e</groupId>
               <artifactId>lifecycle-mapping</artifactId>
@@ -423,39 +481,27 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-checkstyle-plugin</artifactId>
                         <versionRange>[1,)</versionRange>
-                        <goals>
-                          <goal>check</goal>
-                        </goals>
+                        <goals><goal>check</goal></goals>
                       </pluginExecutionFilter>
-                      <action>
-                        <ignore></ignore>
-                      </action>
+                      <action><ignore/></action>
                     </pluginExecution>
                     <pluginExecution>
                       <pluginExecutionFilter>
                         <groupId>org.springframework.boot</groupId>
                         <artifactId>spring-boot-maven-plugin</artifactId>
                         <versionRange>[1,)</versionRange>
-                        <goals>
-                          <goal>build-info</goal>
-                        </goals>
+                        <goals><goal>build-info</goal></goals>
                       </pluginExecutionFilter>
-                      <action>
-                        <ignore></ignore>
-                      </action>
+                      <action><ignore/></action>
                     </pluginExecution>
                     <pluginExecution>
                       <pluginExecutionFilter>
                         <groupId>io.spring.javaformat</groupId>
                         <artifactId>spring-javaformat-maven-plugin</artifactId>
                         <versionRange>[0,)</versionRange>
-                        <goals>
-                          <goal>validate</goal>
-                        </goals>
+                        <goals><goal>validate</goal></goals>
                       </pluginExecutionFilter>
-                      <action>
-                        <ignore></ignore>
-                      </action>
+                      <action><ignore/></action>
                     </pluginExecution>
                   </pluginExecutions>
                 </lifecycleMappingMetadata>
