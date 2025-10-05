@@ -1,6 +1,10 @@
 pipeline {
   agent any
 
+  parameters {
+    string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Git branch to build (e.g. main or test/scanner-check)')
+  }
+
   tools {
     maven 'Maven3'
     jdk 'JDK17'
@@ -17,15 +21,19 @@ pipeline {
     TRIVY_VER        = '0.55.0'
     TRIVY_CACHE_DIR  = '/var/jenkins_home/trivy-cache'
     TRIVY_FRESH_HOURS= '12'
-    TRIVY_SEVERITY   = 'LOW,MEDIUM,HIGH,CRITICAL'   // show everything in the report
-    TRIVY_STRICT_SEV = 'HIGH,CRITICAL'              // emphasized in summary
-    TRIVY_IGNORE_UNFIXED = 'false'                  // set 'true' if you want to hide unfixed
+    TRIVY_SEVERITY   = 'LOW,MEDIUM,HIGH,CRITICAL'
+    TRIVY_STRICT_SEV = 'HIGH,CRITICAL'
+    TRIVY_IGNORE_UNFIXED = 'false'
   }
 
   stages {
     stage('Checkout') {
       steps {
-        git branch: 'main', credentialsId: 'github-pat', url: 'https://github.com/valletivarish/naveen_project.git'
+        script {
+          def branch = params.GIT_BRANCH ?: 'main'
+          echo "Checking out branch: ${branch}"
+          git branch: branch, credentialsId: 'github-pat', url: 'https://github.com/valletivarish/naveen_project.git'
+        }
       }
     }
 
@@ -94,14 +102,20 @@ pipeline {
 
               mvn -B org.owasp:dependency-check-maven:check \
                  -DnvdApiKey='${NVD_API_KEY}' -DdataDirectory="${DC_LOCAL_DIR}" \
-                 -DautoUpdate=false -DnvdValidForHours=${DC_FRESH_HOURS} -DfailOnCVSS=11 -DskipTests
+                 -DautoUpdate=false -DnvdValidForHours=${DC_FRESH_HOURS} -DfailOnCVSS=11 -DskipTests \
+                 -Daggregate -Dformats=HTML,JSON
+
+              if [ -f target/dependency-check-report.json ]; then
+                echo ">>> Sanity check: searching for vulnerable libs in JSON"
+                grep -E -i 'log4j-core|commons-collections' target/dependency-check-report.json || echo "Not found in JSON"
+              fi
             '''
           }
         }
       }
       post {
         always {
-          archiveArtifacts artifacts: 'target/dependency-check-report.html', fingerprint: true, allowEmptyArchive: true
+          archiveArtifacts artifacts: 'target/dependency-check-report.html,target/dependency-check-report.json', fingerprint: true, allowEmptyArchive: true
           publishHTML target: [reportDir: 'target', reportFiles: 'dependency-check-report.html', reportName: 'OWASP Dependency-Check Report', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true]
         }
       }
@@ -127,10 +141,23 @@ pipeline {
               JQ="jq"
             fi
 
+            mvn -B org.cyclonedx:cyclonedx-maven-plugin:2.8.0:makeAggregateBom \
+              -DskipTests -Dcyclonedx.skip=false \
+              -Dcyclonedx.output.format=json \
+              -Dcyclonedx.output.name=bom \
+              -Dcyclonedx.includeBomSerialNumber=true \
+              -Dcyclonedx.include.components=true \
+              -Dcyclonedx.include.dependencies=true
+
+            SBOM_PATH="target/bom.json"
+            [ -f "$SBOM_PATH" ] || SBOM_PATH="bom.json"
+            if [ ! -f "$SBOM_PATH" ]; then
+              echo "ERROR: SBOM not found (expected target/bom.json or bom.json)"; exit 1
+            fi
+
             TARGET_FILE="$(ls target/*.jar 2>/dev/null | head -n1 || true)"; [ -z "$TARGET_FILE" ] && TARGET_FILE="."
             NOW=$(date +%s); FRESH_SECS=$(( ${TRIVY_FRESH_HOURS:-12} * 3600 ))
             META="${TRIVY_CACHE_DIR}/db/metadata.json"; SKIP_ARGS=""
-
             if [ -f "$META" ]; then AGE=$(( NOW - $(stat -c %Y "$META") )); [ $AGE -lt $FRESH_SECS ] && SKIP_ARGS="--skip-db-update --offline-scan"; fi
             [ -n "$SKIP_ARGS" ] && echo "Trivy cache fresh; using ${SKIP_ARGS}." || echo "No/old cache; first scan may download DB."
 
@@ -141,28 +168,32 @@ pipeline {
 
               "$TRIVY_BIN" image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
                 --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
-                --timeout 10m --format json --output trivy-report.json '"${imgTag}"' || true
+                --timeout 10m --format json --output trivy-image.json '"${imgTag}"' || true
+
+              "$TRIVY_BIN" sbom --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
+                --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
+                --timeout 10m --format json --output trivy-sbom.json "$SBOM_PATH" || true
+
+              if [ -s trivy-sbom.json ]; then cp trivy-sbom.json trivy-report.json; else cp trivy-image.json trivy-report.json || true; fi
 
               "$TRIVY_BIN" image --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
                 --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
                 --timeout 10m --format table --output trivy-summary.txt '"${imgTag}"' || true
             else
-              echo ">>> Docker not found. Scanning build artifacts."
-              "$TRIVY_BIN" fs --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
+              echo ">>> Docker not found. Scanning SBOM."
+              "$TRIVY_BIN" sbom --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
                 --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
-                --timeout 10m --format json --output trivy-report.json "$TARGET_FILE" || true
+                --timeout 10m --format json --output trivy-report.json "$SBOM_PATH" || true
 
-              "$TRIVY_BIN" fs --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
+              "$TRIVY_BIN" sbom --cache-dir "${TRIVY_CACHE_DIR}" ${SKIP_ARGS} \
                 --scanners vuln --severity "${TRIVY_SEVERITY}" $( [ "${TRIVY_IGNORE_UNFIXED}" = "true" ] && echo --ignore-unfixed ) \
-                --timeout 10m --format table --output trivy-summary.txt "$TARGET_FILE" || true
+                --timeout 10m --format table --output trivy-summary.txt "$SBOM_PATH" || true
             fi
 
-            # Always produce SARIF for code hosting integrations (optional but useful)
             if [ -s trivy-report.json ]; then
               "$TRIVY_BIN" convert --format sarif --output trivy-report.sarif trivy-report.json || true
             fi
 
-            # Build a rich HTML summary (never blank)
             HIGH=0; CRIT=0; TOTAL=0
             if [ -s trivy-report.json ]; then
               HIGH=$($JQ -r '.. | .Severity? // empty' trivy-report.json | grep -c '^HIGH$' || true)
@@ -172,17 +203,17 @@ pipeline {
 
             if [ ! -s trivy-summary.txt ]; then
               {
-                echo "No table output from Trivy."
+                echo "Trivy SBOM scan summary."
                 echo "Findings (all severities): TOTAL=${TOTAL}, CRITICAL=${CRIT}, HIGH=${HIGH}"
-                echo "Severity filter used: ${TRIVY_SEVERITY}  ignore-unfixed=${TRIVY_IGNORE_UNFIXED}"
-                [ -n "$TARGET_FILE" ] && echo "Target: ${TARGET_FILE}"
+                echo "Severity filter: ${TRIVY_SEVERITY}  ignore-unfixed=${TRIVY_IGNORE_UNFIXED}"
+                echo "SBOM: ${SBOM_PATH}"
+                [ -n "$TARGET_FILE" ] && echo "Target JAR: ${TARGET_FILE}"
               } > trivy-summary.txt
             fi
 
-            # Top findings block (up to 20 rows) added into HTML
             {
               echo "<html><head><meta charset='utf-8'><style>body{font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial} table{border-collapse:collapse;width:100%} th,td{border:1px solid #ddd;padding:6px} th{background:#f3f4f6;text-align:left}</style></head><body>"
-              echo "<h2>Trivy Summary</h2>"
+              echo "<h2>Trivy Summary (SBOM)</h2>"
               echo "<p><b>Total</b>: ${TOTAL} &nbsp; <b>Critical</b>: ${CRIT} &nbsp; <b>High</b>: ${HIGH}</p>"
               echo "<pre>"
               sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' trivy-summary.txt
@@ -204,7 +235,7 @@ pipeline {
       }
       post {
         always {
-          archiveArtifacts artifacts: 'trivy-report.json,trivy-report.sarif,trivy-summary.txt,trivy-summary.html', fingerprint: true, allowEmptyArchive: true
+          archiveArtifacts artifacts: 'trivy-report.json,trivy-image.json,trivy-sbom.json,trivy-report.sarif,trivy-summary.txt,trivy-summary.html', fingerprint: true, allowEmptyArchive: true
           publishHTML target: [reportDir: '.', reportFiles: 'trivy-summary.html', reportName: 'Trivy — Full Report', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true]
         }
       }
